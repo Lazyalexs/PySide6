@@ -1,0 +1,28 @@
+# окружение
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# данные сервера и клиента — никогда не в репозиторий
+db/
+logs/
+storage/
+tmp/
+partial/
+downloads/
+*.db
+*.db-wal
+*.db-shm
+config.toml
+config.ini
+
+# сборка
+build/
+dist/
+*.spec.bak
+
+# инструменты
+.pytest_cache/
+.coverage
+nssm.exe

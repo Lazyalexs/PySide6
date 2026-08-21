@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+argon2-cffi>=23.1
+
+# только для разработки
+pytest>=8.0
+httpx>=0.27
