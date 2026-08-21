@@ -161,9 +161,13 @@ class MainWindow(QMainWindow):
         self.save_button.clicked.connect(self._download_all)
         self.reply_button = QPushButton("Ответить")
         self.reply_button.clicked.connect(self._reply)
+        self.revoke_button = QPushButton("Отозвать")
+        self.revoke_button.clicked.connect(self._revoke)
+        self.revoke_button.setVisible(False)
         self.delete_button = QPushButton("Удалить у себя")
         self.delete_button.clicked.connect(self._hide)
-        for button in (self.save_button, self.reply_button, self.delete_button):
+        for button in (self.save_button, self.reply_button,
+                       self.revoke_button, self.delete_button):
             row.addWidget(button)
         row.addStretch()
         layout.addLayout(row)
@@ -377,6 +381,19 @@ class MainWindow(QMainWindow):
         if total:
             self.attachments.insertItem(0, f"Вложения ({human_size(total)}):")
 
+        if self.current_folder == SENT:
+            # Отзыв возможен, пока никто не забрал: после скачивания файл уже
+            # на чужой машине, и делать вид, что мы его вернули, было бы обманом.
+            taken = any(r.get("downloaded_at") for r in message.get("recipients", []))
+            revoked = message.get("status") == "revoked"
+            self.revoke_button.setVisible(not revoked)
+            self.revoke_button.setEnabled(not taken)
+            self.revoke_button.setToolTip(
+                "Уже скачано получателем — отозвать нельзя" if taken else ""
+            )
+            if revoked:
+                self.header.setText(self.header.text() + "<br><b>Отозвано</b>")
+
         if self.current_folder == INBOX and not message["is_read"]:
             self.core.mark_read(message["id"])
 
@@ -384,12 +401,14 @@ class MainWindow(QMainWindow):
         self.save_button.setText("Сохранить всё")
         self.reply_button.setEnabled(True)
         self.delete_button.setText("Удалить у себя")
+        self.revoke_button.setVisible(False)
 
     def _set_buttons_for_draft(self) -> None:
         """В папке черновиков те же кнопки означают другое."""
         self.save_button.setText("Продолжить письмо")
         self.reply_button.setEnabled(False)
         self.delete_button.setText("Удалить черновик")
+        self.revoke_button.setVisible(False)
 
     def _station_names(self):
         """Имена из кэша адресной книги.
@@ -501,6 +520,24 @@ class MainWindow(QMainWindow):
         if confirm == QMessageBox.StandardButton.Yes:
             self.core.hide(item_id)
             self.refresh()
+
+    def _revoke(self) -> None:
+        message_id = self._selected_message_id()
+        if message_id is None:
+            return
+        confirm = QMessageBox.question(
+            self,
+            "FilePost",
+            "Отозвать письмо? Получатели больше его не увидят.",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.core.revoke(message_id)
+        except ApiError as exc:
+            QMessageBox.warning(self, "FilePost", exc.message)
+            return
+        self._fill_messages()
 
     def _force_refresh(self) -> None:
         try:

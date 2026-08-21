@@ -117,6 +117,15 @@ class SettingsDialog(QDialog):
         self.limit.setSuffix(" МБ/с (0 — без ограничения)")
         self.limit.setValue(self.settings.prefs.upload_limit_mbps)
         form.addRow("Ограничение отдачи:", self.limit)
+
+        self.download_limit = QSpinBox()
+        self.download_limit.setRange(0, 10000)
+        self.download_limit.setSuffix(" МБ/с (0 — без ограничения)")
+        self.download_limit.setValue(self.settings.prefs.download_limit_mbps)
+        self.download_limit.setToolTip(
+            "Пригодится, когда приём большого файла мешает работать за этой же машиной"
+        )
+        form.addRow("Ограничение приёма:", self.download_limit)
         return box
 
     def _notify_group(self) -> QGroupBox:
@@ -217,6 +226,7 @@ class SettingsDialog(QDialog):
         prefs.on_name_clash = "rename" if self.clash.currentIndex() == 0 else "replace"
         prefs.parallel_transfers = self.parallel.value()
         prefs.upload_limit_mbps = self.limit.value()
+        prefs.download_limit_mbps = self.download_limit.value()
         prefs.notify_new_message = self.notify_new.isChecked()
         prefs.notify_transfer_done = self.notify_done.isChecked()
         prefs.sound = self.sound.isChecked()

@@ -51,6 +51,7 @@ class Preferences:
     on_name_clash: str = "rename"  # rename | replace
     parallel_transfers: int = 2
     upload_limit_mbps: int = 0  # 0 — без ограничения
+    download_limit_mbps: int = 0
     notify_new_message: bool = True
     notify_transfer_done: bool = True
     sound: bool = False

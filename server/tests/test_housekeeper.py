@@ -124,7 +124,8 @@ def test_retention_disabled_by_default(buh, sklad, cfg: Config, db: Database):
     assert wait_ready(buh, attachment_id) == "ready"
     db.execute("UPDATE messages SET sent_at = ? WHERE id = ?", (OLD, message_id))
 
-    assert hk.apply_retention(db, cfg) == []
+    deleted, warned = hk.apply_retention(db, cfg)
+    assert deleted == [] and warned == []
     assert db.scalar("SELECT state FROM attachments WHERE id = ?",
                      (attachment_id,)) == "ready"
 
@@ -135,7 +136,7 @@ def test_retention_deletes_when_enabled(buh, sklad, cfg: Config, db: Database):
     db.execute("UPDATE messages SET sent_at = ? WHERE id = ?", (OLD, message_id))
     cfg.retention.enabled = True
 
-    deleted = hk.apply_retention(db, cfg)
+    deleted, _ = hk.apply_retention(db, cfg)
     assert attachment_id in deleted
     assert db.scalar("SELECT state FROM attachments WHERE id = ?",
                      (attachment_id,)) == "deleted"

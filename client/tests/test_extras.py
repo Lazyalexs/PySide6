@@ -300,3 +300,137 @@ def test_buttons_reset_when_selection_cleared(buh, sklad):
         assert window.reply_button.isEnabled()
     finally:
         window.tray.hide()
+
+
+# --------------------------------------------------------------------------- отзыв
+
+
+def test_revoke_removes_message_at_recipient(buh, sklad, tmp_path: Path):
+    """Отозванное письмо исчезает у получателя, скачать вложения уже нельзя."""
+    path = tmp_path / "revoke.bin"
+    path.write_bytes(os.urandom(2048))
+    buh.transfers.start()
+    message_id = buh.compose([sklad.settings.station.station_id], "ошибся", "", [path])
+    assert wait_for(
+        lambda: buh.store.transfers()[0]["state"] == "done", timeout=60
+    ), buh.store.transfers()[0]
+    assert wait_for(lambda: sklad.sync() or sklad.inbox())
+    assert sklad.inbox()
+
+    buh.revoke(message_id)
+
+    assert wait_for(lambda: sklad.sync() is not None)
+    assert sklad.inbox() == [], "письмо убрано у получателя по событию"
+
+
+def test_revoke_refused_after_download(buh, sklad, tmp_path: Path):
+    from filepost_client.api import ApiError
+
+    path = tmp_path / "taken.bin"
+    path.write_bytes(os.urandom(1024))
+    buh.transfers.start()
+    message_id = buh.compose([sklad.settings.station.station_id], "забрали", "", [path])
+    assert wait_for(lambda: buh.store.transfers()[0]["state"] == "done", timeout=60)
+    assert wait_for(lambda: sklad.sync() or sklad.inbox())
+
+    sklad.transfers.start()
+    ids = sklad.download_all(sklad.inbox()[0]["id"])
+    assert wait_for(
+        lambda: sklad.store.transfer(ids[0])["state"] == "done", timeout=60
+    )
+
+    with pytest.raises(ApiError) as exc:
+        buh.revoke(message_id)
+    assert "Уже скачано" in exc.value.message
+
+
+# --------------------------------------------------------------------------- оценка времени
+
+
+def test_no_estimate_without_history(buh):
+    """Пока передач не было, ничего не выдумываем: неверная оценка хуже её отсутствия."""
+    assert buh.average_speed == 0
+    assert buh.estimate_seconds(10 * MB) is None
+
+
+def test_estimate_uses_measured_speed(buh):
+    buh._remember_speed(10 * MB)  # 10 МБ/с
+    assert buh.average_speed == 10 * MB
+    assert buh.estimate_seconds(100 * MB) == pytest.approx(10.0, rel=0.01)
+
+
+def test_speed_is_smoothed_not_replaced(buh):
+    """Одна медленная передача не должна перечёркивать накопленную картину."""
+    buh._remember_speed(10 * MB)
+    buh._remember_speed(1 * MB)
+    speed = buh.average_speed
+    assert 1 * MB < speed < 10 * MB
+    assert speed == pytest.approx(0.7 * 10 * MB + 0.3 * 1 * MB, rel=0.01)
+
+
+def test_speed_survives_restart(buh):
+    buh._remember_speed(8 * MB)
+    from filepost_client.core import Core
+    from filepost_client.settings import Settings
+
+    reopened = Core(Settings(root=buh.settings.root).load())
+    try:
+        assert reopened.average_speed == pytest.approx(8 * MB, rel=0.01)
+    finally:
+        reopened.stop()
+
+
+def test_real_transfer_records_speed(buh, sklad, tmp_path: Path):
+    path = tmp_path / "measured.bin"
+    path.write_bytes(os.urandom(2 * MB))
+    buh.transfers.start()
+    buh.compose([sklad.settings.station.station_id], "замер", "", [path])
+    assert wait_for(lambda: buh.store.transfers()[0]["state"] == "done", timeout=60)
+    assert buh.average_speed > 0, "фактическая скорость записана после передачи"
+    assert buh.estimate_seconds(10 * MB) is not None
+
+
+def test_small_transfers_do_not_pollute_speed(buh, sklad, tmp_path: Path):
+    """На мелких файлах меряются накладные расходы, а не канал."""
+    path = tmp_path / "tiny.bin"
+    path.write_bytes(os.urandom(1024))
+    buh.transfers.start()
+    buh.compose([sklad.settings.station.station_id], "мелочь", "", [path])
+    assert wait_for(lambda: buh.store.transfers()[0]["state"] == "done", timeout=60)
+    assert buh.average_speed == 0, "замер по килобайту не берётся"
+
+
+# --------------------------------------------------------------------------- приём
+
+
+def test_download_limit_reaches_manager(buh):
+    buh.settings.prefs.download_limit_mbps = 5
+    buh.apply_settings()
+    assert buh.transfers.download_limiter.limit == 5 * MB
+
+    buh.settings.prefs.download_limit_mbps = 0
+    buh.apply_settings()
+    assert not buh.transfers.download_limiter.enabled
+
+
+def test_throttled_download_still_delivers(buh, sklad, tmp_path: Path):
+    import hashlib
+
+    path = tmp_path / "slow-down.bin"
+    data = os.urandom(2 * MB)
+    path.write_bytes(data)
+    buh.transfers.start()
+    buh.compose([sklad.settings.station.station_id], "приём", "", [path])
+    assert wait_for(lambda: buh.store.transfers()[0]["state"] == "done", timeout=60)
+    assert wait_for(lambda: sklad.sync() or sklad.inbox())
+
+    sklad.settings.prefs.download_limit_mbps = 8
+    sklad.apply_settings()
+    sklad.transfers.start()
+    ids = sklad.download_all(sklad.inbox()[0]["id"])
+    assert wait_for(
+        lambda: sklad.store.transfer(ids[0])["state"] == "done", timeout=90
+    ), sklad.store.transfer(ids[0])
+
+    saved = Path(sklad.store.transfer(ids[0])["file_path"])
+    assert hashlib.sha256(saved.read_bytes()).hexdigest() == hashlib.sha256(data).hexdigest()

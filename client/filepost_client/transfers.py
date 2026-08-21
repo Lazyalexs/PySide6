@@ -112,6 +112,8 @@ class TransferManager:
         on_progress: Callable[[Progress], None] | None = None,
         on_name_clash: str = "rename",
         upload_limit_mbps: int = 0,
+        download_limit_mbps: int = 0,
+        on_speed_sample: Callable[[float], None] | None = None,
     ) -> None:
         self.api = api
         self.store = store
@@ -122,6 +124,10 @@ class TransferManager:
         self.on_name_clash = on_name_clash
         # Предел общий на все потоки: ограничивать нужно канал, а не каждую передачу.
         self.limiter = RateLimiter(upload_limit_mbps)
+        self.download_limiter = RateLimiter(download_limit_mbps)
+        #: сюда уходит фактическая скорость завершённых передач — по ней
+        #: считается оценка «примерно N минут» в окне отправки (3.2)
+        self.on_speed_sample = on_speed_sample
 
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -388,6 +394,9 @@ class TransferManager:
                     transferred += len(block)
                     self.store.update_transfer(item["id"], transferred=transferred)
                     self._emit(item, "active", transferred, started)
+                    self.download_limiter.account(
+                        len(block), lambda: self._is_paused(item["id"])
+                    )
         except Offline:
             self._requeue(item)
             return
@@ -447,8 +456,6 @@ class TransferManager:
         started: float | None,
         error: str | None = None,
     ) -> None:
-        if not self.on_progress:
-            return
         speed = 0.0
         eta = None
         if started:
@@ -456,6 +463,18 @@ class TransferManager:
             speed = transferred / elapsed
             if speed > 0 and item["size"] > transferred:
                 eta = (item["size"] - transferred) / speed
-        self.on_progress(
-            Progress(item["id"], state, transferred, item["size"], speed, eta, error)
-        )
+
+        # Замер копим только по завершившимся передачам заметного размера:
+        # на мелких файлах скорость меряет накладные расходы, а не канал.
+        if (
+            state == "done"
+            and speed > 0
+            and self.on_speed_sample
+            and item["size"] >= MB
+        ):
+            self.on_speed_sample(speed)
+
+        if self.on_progress:
+            self.on_progress(
+                Progress(item["id"], state, transferred, item["size"], speed, eta, error)
+            )

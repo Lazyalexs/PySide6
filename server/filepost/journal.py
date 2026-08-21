@@ -18,6 +18,9 @@ READ = "read"
 DOWNLOADED = "downloaded"
 DELETED = "deleted"
 RENAMED = "renamed"
+REVOKED = "revoked"
+#: предупреждение отправителю о скором автоудалении (2.6, notify_sender_before_days)
+RETENTION_WARNING = "retention_warning"
 
 
 def emit(db: Database, station_id: int, type_: str, object_id: int | None = None) -> int:

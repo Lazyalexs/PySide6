@@ -171,6 +171,9 @@ class ApiClient:
     def send(self, message_id: int) -> dict:
         return self.post(f"/api/messages/{message_id}/send")
 
+    def revoke(self, message_id: int) -> dict:
+        return self.post(f"/api/messages/{message_id}/revoke")
+
     def mark_read(self, message_id: int) -> None:
         self.post(f"/api/messages/{message_id}/read")
 

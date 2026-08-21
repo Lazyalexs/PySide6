@@ -91,9 +91,11 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
         responder.stop()
 
     app = FastAPI(title="FilePost", version="1.0.0", lifespan=lifespan)
+    slots = storage.DownloadSlots()
     app.state.cfg = cfg
     app.state.db = db
     app.state.housekeeper = keeper
+    app.state.download_slots = slots
 
     def current(authorization: Annotated[str | None, Header()] = None) -> Station:
         token = None
@@ -278,6 +280,11 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
     def send(message_id: int, station: Current) -> dict:
         return msg.send_message(db, station.id, message_id)
 
+    @app.post("/api/messages/{message_id}/revoke")
+    def revoke(message_id: int, station: Current) -> dict:
+        """Отозвать письмо, пока его никто не забрал."""
+        return msg.revoke_message(db, station.id, message_id)
+
     # ---------------------------------------------------------------- получение
 
     @app.get("/api/inbox")
@@ -321,26 +328,46 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
             )
             raise StorageError("Файл отсутствует на сервере", 410)
 
+        limit = cfg.limits.max_parallel_downloads_per_user
+        if not slots.acquire(station.id, limit):
+            raise StorageError(
+                f"Одновременно можно скачивать не больше {limit} файлов, "
+                f"дождитесь окончания текущих",
+                429,
+            )
+
         size = path.stat().st_size
-        span = storage.parse_range(range, size)
+        try:
+            span = storage.parse_range(range, size)
+        except StorageError:
+            slots.release(station.id)
+            raise
+
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Disposition": f'attachment; filename="{attachment_id}.bin"',
             "X-Original-Name": row["original_name"].encode("utf-8").hex(),
             "X-SHA256": row["sha256"],
         }
+        start, end = span if span else (0, size - 1)
+
+        def stream():
+            """Слот освобождается и при обрыве соединения: finally отработает
+            и когда клиент отвалился на середине пятигигабайтного файла."""
+            try:
+                yield from storage.iter_range(path, start, end)
+            finally:
+                slots.release(station.id)
+
         if span is None:
             headers["Content-Length"] = str(size)
             return StreamingResponse(
-                storage.iter_range(path, 0, size - 1),
-                media_type="application/octet-stream",
-                headers=headers,
+                stream(), media_type="application/octet-stream", headers=headers
             )
-        start, end = span
         headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         headers["Content-Length"] = str(end - start + 1)
         return StreamingResponse(
-            storage.iter_range(path, start, end),
+            stream(),
             status_code=206,
             media_type="application/octet-stream",
             headers=headers,
@@ -404,6 +431,7 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
             raise StorageError("Станция не найдена", 404)
         if payload.display_name:
             _rename(station_id, payload.display_name, actor=station.id)
+        result: dict = {"ok": True}
         if payload.is_active is not None:
             db.execute(
                 "UPDATE stations SET is_active = ? WHERE id = ?",
@@ -411,13 +439,32 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
             )
             if not payload.is_active:
                 db.execute("DELETE FROM tokens WHERE station_id = ?", (station_id,))
+                # Письма, адресованные станции, никуда не деваются, но забрать их
+                # теперь некому. Администратор должен узнать об этом сразу, а не
+                # по звонку отправителя через неделю.
+                pending = db.query(
+                    "SELECT m.id, s.display_name AS sender FROM message_recipients r"
+                    " JOIN messages m ON m.id = r.message_id"
+                    " JOIN stations s ON s.id = m.sender_id"
+                    " WHERE r.recipient_id = ? AND m.status = 'sent'"
+                    "   AND r.downloaded_at IS NULL AND r.deleted_by_recipient = 0",
+                    (station_id,),
+                )
+                result["undelivered"] = [
+                    {"message_id": r["id"], "sender": r["sender"]} for r in pending
+                ]
+                if pending:
+                    result["warning"] = (
+                        f"У станции осталось неполученных писем: {len(pending)}. "
+                        f"Файлы на сервере сохранены, но забрать их теперь некому."
+                    )
         if payload.is_admin is not None:
             db.execute(
                 "UPDATE stations SET is_admin = ? WHERE id = ?",
                 (int(payload.is_admin), station_id),
             )
         journal.audit(db, station.id, "station.patch", station_id, **payload.model_dump())
-        return {"ok": True}
+        return result
 
     @app.post("/api/admin/stations/{station_id}/reset")
     def admin_reset(station_id: int, station: Admin) -> dict:

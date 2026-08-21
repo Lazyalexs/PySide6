@@ -74,6 +74,8 @@ class LimitsConfig:
     max_parallel_downloads_per_user: int = 2
     max_recipients_per_message: int = 20
     max_attachments_per_message: int = 50
+    max_subject_length: int = 200
+    max_body_length: int = 10000
 
 
 @dataclass
@@ -171,4 +173,6 @@ max_parallel_uploads_per_user = 2
 max_parallel_downloads_per_user = 2
 max_recipients_per_message = 20
 max_attachments_per_message = 50
+max_subject_length = 200
+max_body_length = 10000
 """

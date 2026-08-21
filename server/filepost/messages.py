@@ -7,7 +7,7 @@ import uuid
 
 from .config import Config
 from .db import Database
-from .journal import DELETED, DOWNLOADED, NEW_MESSAGE, READ, audit, emit
+from .journal import DELETED, DOWNLOADED, NEW_MESSAGE, READ, REVOKED, audit, emit
 from .storage import StorageError, check_space
 from .util import utcnow
 
@@ -20,6 +20,16 @@ def create_message(
     if len(recipients) > cfg.limits.max_recipients_per_message:
         raise StorageError(
             f"Больше {cfg.limits.max_recipients_per_message} получателей за раз нельзя", 400
+        )
+    # Границы задаются в конфиге, а не в схеме запроса: иначе их нельзя поменять
+    # без пересборки, и в ответе будет невнятная ошибка валидации вместо текста.
+    if len(subject or "") > cfg.limits.max_subject_length:
+        raise StorageError(
+            f"Тема длиннее {cfg.limits.max_subject_length} символов", 400
+        )
+    if len(body or "") > cfg.limits.max_body_length:
+        raise StorageError(
+            f"Комментарий длиннее {cfg.limits.max_body_length} символов", 400
         )
 
     unique = list(dict.fromkeys(recipients))
@@ -128,6 +138,43 @@ def send_message(db: Database, station_id: int, message_id: int) -> dict:
     return {"message_id": message_id, "status": "sent"}
 
 
+def revoke_message(db: Database, station_id: int, message_id: int) -> dict:
+    """Отозвать отправленное письмо, пока его никто не забрал.
+
+    В почтовой модели просят всегда, и здесь это выполнимо честно: файл лежит
+    на сервере, и пока `downloaded_at` пуст, у получателя его физически нет.
+    После скачивания отзывать нечего — файл уже на чужой машине, и делать вид,
+    что мы его вернули, было бы обманом.
+    """
+    message = db.one(
+        "SELECT * FROM messages WHERE id = ? AND sender_id = ?", (message_id, station_id)
+    )
+    if message is None:
+        raise StorageError("Сообщение не найдено", 404)
+    if message["status"] == "revoked":
+        return {"message_id": message_id, "status": "revoked", "already": True}
+    if message["status"] != "sent":
+        raise StorageError("Сообщение ещё не отправлено", 409)
+
+    taken = db.query(
+        "SELECT s.display_name FROM message_recipients r"
+        " JOIN stations s ON s.id = r.recipient_id"
+        " WHERE r.message_id = ? AND r.downloaded_at IS NOT NULL",
+        (message_id,),
+    )
+    if taken:
+        names = ", ".join(r["display_name"] for r in taken)
+        raise StorageError(f"Уже скачано: {names}. Отозвать нельзя", 409)
+
+    db.execute("UPDATE messages SET status = 'revoked' WHERE id = ?", (message_id,))
+    for row in db.query(
+        "SELECT recipient_id FROM message_recipients WHERE message_id = ?", (message_id,)
+    ):
+        emit(db, row["recipient_id"], REVOKED, message_id)
+    audit(db, station_id, "message.revoke", message_id)
+    return {"message_id": message_id, "status": "revoked"}
+
+
 def inbox(db: Database, station_id: int) -> list[dict]:
     rows = db.query(
         "SELECT m.id, m.subject, m.body, m.sent_at, s.display_name AS sender,"
@@ -154,7 +201,7 @@ def sent(db: Database, station_id: int) -> list[dict]:
         item["recipients"] = [
             dict(r)
             for r in db.query(
-                "SELECT s.display_name AS name, r.is_read, r.downloaded_at"
+                "SELECT s.display_name AS name, s.is_active, r.is_read, r.downloaded_at"
                 " FROM message_recipients r JOIN stations s ON s.id = r.recipient_id"
                 " WHERE r.message_id = ?",
                 (row["id"],),
@@ -176,7 +223,7 @@ def get_message(db: Database, station_id: int, message_id: int) -> dict:
     item["recipients"] = [
         dict(r)
         for r in db.query(
-            "SELECT s.display_name AS name, r.is_read, r.downloaded_at"
+            "SELECT s.display_name AS name, s.is_active, r.is_read, r.downloaded_at"
             " FROM message_recipients r JOIN stations s ON s.id = r.recipient_id"
             " WHERE r.message_id = ?",
             (message_id,),
@@ -236,13 +283,20 @@ def hide_message(db: Database, station_id: int, message_id: int) -> None:
 
 
 def find_orphaned(db: Database) -> list[int]:
-    """Вложения, которые скрыли у себя все участники. Счётчик ссылок не заводим (2.3)."""
+    """Вложения, которые больше никому не видны. Счётчик ссылок не заводим (2.3).
+
+    Два случая. Обычный: письмо скрыли у себя и отправитель, и все получатели.
+    И отозванное письмо: получатели его уже не видят и скрыть физически не могут,
+    поэтому условие по ним не проверяется — иначе такой файл не стал бы ничейным
+    никогда и остался бы на диске навсегда.
+    """
     rows = db.query(
         "SELECT a.id FROM attachments a"
         " JOIN messages m ON m.id = a.message_id"
         " WHERE a.state = 'ready' AND m.deleted_by_sender = 1"
-        "   AND NOT EXISTS (SELECT 1 FROM message_recipients r"
-        "                   WHERE r.message_id = m.id AND r.deleted_by_recipient = 0)"
+        "   AND (m.status = 'revoked'"
+        "        OR NOT EXISTS (SELECT 1 FROM message_recipients r"
+        "                       WHERE r.message_id = m.id AND r.deleted_by_recipient = 0))"
     )
     return [r["id"] for r in rows]
 

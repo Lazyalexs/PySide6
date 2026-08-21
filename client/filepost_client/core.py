@@ -37,11 +37,15 @@ class Core:
             on_progress=self._on_progress,
             on_name_clash=settings.prefs.on_name_clash,
             upload_limit_mbps=settings.prefs.upload_limit_mbps,
+            download_limit_mbps=settings.prefs.download_limit_mbps,
+            on_speed_sample=self._remember_speed,
         )
 
         self.online = False
         self.last_error: str = ""
         self.health: dict = {}
+        #: id сообщений, о скором автоудалении которых предупредил сервер (2.6)
+        self.warnings: list[int] = []
 
         # Колбэки для UI. Ядро не знает, кто на них подписан.
         self.on_state_change: Callable[[], None] | None = None
@@ -204,8 +208,12 @@ class Core:
                     new_messages.append(item)
             elif event["type"] in ("read", "downloaded"):
                 self._pull_message(event["object_id"], folder="sent")
-            elif event["type"] == "deleted":
+            elif event["type"] in ("deleted", "revoked"):
+                # Отозванное письмо исчезает у получателя вместе с вложениями:
+                # скачать их сервер всё равно уже не даст.
                 self.store.remove_message(event["object_id"])
+            elif event["type"] == "retention_warning":
+                self.warnings.append(event["object_id"])
             elif event["type"] == "renamed":
                 self._refresh_presence()
 
@@ -350,6 +358,13 @@ class Core:
         self._notify()
         return True
 
+    def revoke(self, message_id: int) -> dict:
+        """Отозвать письмо, пока получатели его не забрали."""
+        result = self.api.revoke(message_id)
+        self.refresh_all()
+        self._notify()
+        return result
+
     def download_all(self, message_id: int) -> list[int]:
         item = self.store.message(message_id) or {}
         peer = item.get("sender") or ""
@@ -367,6 +382,36 @@ class Core:
         self.settings.save()
         self._notify()
 
+    # ------------------------------------------------------------------ оценка времени
+
+    def _remember_speed(self, speed: float) -> None:
+        """Скользящее среднее фактической скорости, переживает перезапуск.
+
+        Вес 0,3 у нового замера: одна медленная передача не должна перечёркивать
+        накопленную картину, но и подстраиваться под изменившуюся сеть надо
+        за несколько передач, а не за сотню.
+        """
+        previous = float(self.store.get_meta("avg_speed", "0") or 0)
+        smoothed = speed if previous <= 0 else previous * 0.7 + speed * 0.3
+        self.store.set_meta("avg_speed", f"{smoothed:.0f}")
+
+    @property
+    def average_speed(self) -> float:
+        """Байт в секунду по прошлым передачам. 0 — данных ещё нет."""
+        return float(self.store.get_meta("avg_speed", "0") or 0)
+
+    def estimate_seconds(self, total_bytes: int) -> float | None:
+        """Оценка времени отправки. None — если мерить ещё не по чему.
+
+        Считается по фактической скорости прошлых передач, а не по номиналу сети:
+        первое, что спрашивают при отправке гигабайтов, — «сколько ждать», и ответ
+        по паспортной скорости канала всегда оптимистичнее реальности.
+        """
+        speed = self.average_speed
+        if speed <= 0 or total_bytes <= 0:
+            return None
+        return total_bytes / speed
+
     def apply_settings(self) -> None:
         """Подхватить изменённые предпочтения без перезапуска клиента.
 
@@ -379,6 +424,10 @@ class Core:
         self.transfers.on_name_clash = prefs.on_name_clash
         self.transfers.limiter.limit = max(0, prefs.upload_limit_mbps) * (1024 * 1024)
         self.transfers.limiter.reset()
+        self.transfers.download_limiter.limit = (
+            max(0, prefs.download_limit_mbps) * (1024 * 1024)
+        )
+        self.transfers.download_limiter.reset()
         self.settings.ensure_dirs()
 
     def refresh_health(self) -> dict:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Iterator
@@ -63,6 +64,41 @@ def check_space(db: Database, cfg: Config, size: int) -> None:
     available = free_space(cfg.storage_path) - reserved_bytes(db) - size
     if available < cfg.storage.min_free_space:
         raise NoSpace("На сервере нет места с учётом незавершённых загрузок")
+
+
+class DownloadSlots:
+    """Учёт идущих скачиваний по станциям. Раздел 2.6, `max_parallel_downloads_per_user`.
+
+    Без этого пятеро получателей одного письма разом тянут файл на 5 ГБ, упираются
+    в диск, и обычная отправка в этот момент встаёт.
+
+    Счётчик держится в памяти намеренно: он описывает соединения, живущие прямо
+    сейчас, и после перезапуска службы их не существует — восстанавливать нечего.
+    """
+
+    def __init__(self) -> None:
+        self._active: dict[int, int] = {}
+        self._lock = threading.Lock()
+
+    def count(self, station_id: int) -> int:
+        with self._lock:
+            return self._active.get(station_id, 0)
+
+    def acquire(self, station_id: int, limit: int) -> bool:
+        with self._lock:
+            current = self._active.get(station_id, 0)
+            if limit > 0 and current >= limit:
+                return False
+            self._active[station_id] = current + 1
+            return True
+
+    def release(self, station_id: int) -> None:
+        with self._lock:
+            current = self._active.get(station_id, 0) - 1
+            if current > 0:
+                self._active[station_id] = current
+            else:
+                self._active.pop(station_id, None)
 
 
 def release_stale_reservations(db: Database, cfg: Config) -> int:

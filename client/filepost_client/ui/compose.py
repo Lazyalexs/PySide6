@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from ..api import ApiError
 from ..core import Core
-from ..util import human_presence, human_size
+from ..util import human_eta, human_presence, human_size
 
 
 class ComposeDialog(QDialog):
@@ -185,8 +185,14 @@ class ComposeDialog(QDialog):
             self.summary.setText("Перетащите файлы сюда или нажмите «Выбрать файлы»")
             return
         total = sum(p.stat().st_size for p in self.files)
+        text = f"Итого {human_size(total)} · файлов: {len(self.files)}"
+
         # Оценка по фактической скорости прошлых передач, а не по номиналу сети (3.2).
-        self.summary.setText(f"Итого {human_size(total)} · {len(self.files)} файлов")
+        # Пока передач не было, ничего не выдумываем: неверная оценка хуже её отсутствия.
+        eta = self.core.estimate_seconds(total)
+        if eta is not None:
+            text += f" · примерно {human_eta(eta).lstrip('~')}"
+        self.summary.setText(text)
 
     # ------------------------------------------------------------------ отправка
 

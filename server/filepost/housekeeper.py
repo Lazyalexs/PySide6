@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .config import Config
 from .db import Database
-from .journal import audit
+from .journal import RETENTION_WARNING, audit, emit
 from .messages import find_orphaned
 from .storage import release_stale_reservations, resolve
 from .util import age_seconds, free_space, human_size, now, utcnow
@@ -34,6 +34,7 @@ class SweepReport:
     events_trimmed: int = 0
     orphaned_marked: list[int] = field(default_factory=list)
     retention_deleted: list[int] = field(default_factory=list)
+    retention_warned: list[int] = field(default_factory=list)
     backup_path: str | None = None
     low_space: bool = False
 
@@ -44,6 +45,7 @@ class SweepReport:
             "events_trimmed": self.events_trimmed,
             "orphaned_marked": self.orphaned_marked,
             "retention_deleted": self.retention_deleted,
+            "retention_warned": self.retention_warned,
             "backup_path": self.backup_path,
             "low_space": self.low_space,
         }
@@ -55,6 +57,7 @@ class SweepReport:
             or self.events_trimmed
             or self.orphaned_marked
             or self.retention_deleted
+            or self.retention_warned
             or self.backup_path
             or self.low_space
         )
@@ -132,19 +135,22 @@ def mark_orphaned(db: Database) -> list[int]:
     return ids
 
 
-def apply_retention(db: Database, cfg: Config) -> list[int]:
-    """Очистка по сроку. ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНА — ничего не удаляется само."""
+def apply_retention(db: Database, cfg: Config) -> tuple[list[int], list[int]]:
+    """Очистка по сроку. ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНА — ничего не удаляется само.
+
+    Возвращает (удалённые вложения, предупреждённые сообщения).
+    """
     if not cfg.retention.enabled:
-        return []
+        return [], []
 
     deleted: list[int] = []
+    warned: list[int] = []
     after_download = cfg.retention.delete_after_download_days * 86400
     never = cfg.retention.delete_never_downloaded_days * 86400
+    warn_before = cfg.retention.notify_sender_before_days * 86400
 
     for row in db.query(
-        "SELECT a.id, a.storage_path, m.sent_at,"
-        "  (SELECT MIN(COALESCE(r.downloaded_at,'')) FROM message_recipients r"
-        "    WHERE r.message_id = m.id) AS first_download,"
+        "SELECT a.id, a.storage_path, m.id AS message_id, m.sender_id, m.sent_at,"
         "  (SELECT COUNT(*) FROM message_recipients r"
         "    WHERE r.message_id = m.id AND r.downloaded_at IS NULL) AS pending"
         " FROM attachments a JOIN messages m ON m.id = a.message_id"
@@ -153,14 +159,31 @@ def apply_retention(db: Database, cfg: Config) -> list[int]:
         age_sent = age_seconds(row["sent_at"])
         if age_sent is None:
             continue
-        downloaded_by_all = row["pending"] == 0
-        expired = (
-            downloaded_by_all and age_sent > after_download
-        ) or (not downloaded_by_all and age_sent > never)
-        if expired:
+
+        # Срок зависит от того, забрали файл все получатели или нет.
+        deadline = after_download if row["pending"] == 0 else never
+
+        if age_sent > deadline:
             _drop_file(db, cfg, row["id"], row["storage_path"], reason="retention")
             deleted.append(row["id"])
-    return deleted
+        elif warn_before and age_sent > deadline - warn_before:
+            # Предупреждаем отправителя один раз: повторное событие на каждый
+            # прогон уборки превратило бы уведомление в шум.
+            if _warn_sender_once(db, row["sender_id"], row["message_id"]):
+                warned.append(row["message_id"])
+
+    return deleted, warned
+
+
+def _warn_sender_once(db: Database, sender_id: int, message_id: int) -> bool:
+    already = db.one(
+        "SELECT 1 FROM events WHERE station_id = ? AND type = ? AND object_id = ?",
+        (sender_id, RETENTION_WARNING, message_id),
+    )
+    if already:
+        return False
+    emit(db, sender_id, RETENTION_WARNING, message_id)
+    return True
 
 
 def delete_orphaned(db: Database, cfg: Config) -> list[int]:
@@ -252,7 +275,9 @@ def sweep(db: Database, cfg: Config, *, force_backup: bool = False) -> SweepRepo
     report.abandoned_uploads = cleanup_abandoned_uploads(db, cfg)
     report.events_trimmed = trim_events(db, cfg)
     report.orphaned_marked = mark_orphaned(db)
-    report.retention_deleted = apply_retention(db, cfg) + delete_orphaned(db, cfg)
+    deleted, warned = apply_retention(db, cfg)
+    report.retention_deleted = deleted + delete_orphaned(db, cfg)
+    report.retention_warned = warned
     report.backup_path = daily_backup(db, cfg, force=force_backup)
     report.low_space = check_space(db, cfg)
 

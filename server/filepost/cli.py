@@ -262,7 +262,25 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     cfg = load_config(args.config)
     app = build(args.config)
-    uvicorn.run(app, host=cfg.server.host, port=cfg.server.port, log_level="info")
+    uvicorn.run(
+        app,
+        host=cfg.server.host,
+        port=cfg.server.port,
+        log_level="info",
+        # Умолчания Uvicorn рассчитаны на API с JSON, а здесь ходят гигабайты.
+        # Keep-alive длиннее: между чанками бывают паузы, и рвать соединение
+        # каждые 5 секунд означает переустанавливать его сотни раз за файл.
+        timeout_keep_alive=120,
+        # Заголовки у нас короткие; запас нужен на длинные имена файлов в
+        # Content-Disposition, но не на мегабайты — это защита от мусора.
+        h11_max_incomplete_event_size=64 * 1024,
+        # Служба не должна висеть вечно при остановке, если кто-то качает
+        # пятигигабайтный файл: NSSM иначе прибьёт её жёстко.
+        timeout_graceful_shutdown=30,
+        # Перезапуск воркера по числу запросов недопустим: он оборвёт
+        # активные передачи на середине.
+        limit_max_requests=None,
+    )
     return 0
 
 
