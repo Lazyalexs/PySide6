@@ -1,13 +1,13 @@
 ; Установщик клиента FilePost. Собирается Inno Setup 6 (компилятор ISCC.exe).
 ;
 ;   1. pyinstaller filepost.spec        -> dist\FilePost.exe
-;   2. ISCC.exe installer.iss           -> Output\FilePost-Setup-1.0.0.exe
+;   2. ISCC.exe installer.iss           -> Output\FilePost-Setup-1.0.3.exe
 ;
 ; Ставится в %LOCALAPPDATA% и не требует прав администратора: раскатывать
 ; на семь станций проще, когда установщик не спрашивает пароль админа.
 
 #define AppName        "FilePost"
-#define AppVersion     "1.0.2"
+#define AppVersion     "1.0.3"
 #define AppPublisher   "FilePost"
 #define AppExe         "FilePost.exe"
 
@@ -68,7 +68,7 @@ Type: dirifempty; Name: "{app}"
 [Code]
 { Адрес сервера и код регистрации можно передать при тихой установке:
 
-    FilePost-Setup-1.0.0.exe /VERYSILENT /SERVER=filepost-srv:8080 /STATION="Бухгалтерия, окно 2"
+    FilePost-Setup-1.0.3.exe /VERYSILENT /SERVER=filepost-srv:8080 /STATION="Бухгалтерия, окно 2"
 
   Тогда клиент при первом запуске не спросит адрес — останется только код
   регистрации. Это то, ради чего пункт 3 раздела 4 архитектуры существует:

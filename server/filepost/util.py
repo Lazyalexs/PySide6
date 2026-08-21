@@ -25,9 +25,18 @@ def in_hours(hours: float) -> str:
 
 
 def parse(ts: str | None) -> datetime | None:
+    """Неразбираемая метка времени — это None, а не исключение.
+
+    Строки приходят из БД, которую могли восстановить из копии или поправить
+    руками. Считать такую метку отсутствующей безопасно: expired() ответит
+    «просрочено», а age_seconds() — «возраст неизвестен».
+    """
     if not ts:
         return None
-    return datetime.strptime(ts, ISO).replace(tzinfo=timezone.utc)
+    try:
+        return datetime.strptime(ts, ISO).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def expired(ts: str | None) -> bool:

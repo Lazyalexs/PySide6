@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+from . import __version__
 from .api import ApiClient, ApiError, ClientTooOld, Offline
 from .settings import Settings
 from .store import LocalStore
@@ -19,7 +20,9 @@ from .util import machine_name
 
 log = logging.getLogger("filepost.core")
 
-VERSION = "1.0.0"
+#: Версия задаётся в filepost_client/__init__.py; здесь только имя, под которым
+#: её знает остальной код.
+VERSION = __version__
 
 
 class Core:

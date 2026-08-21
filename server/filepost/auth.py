@@ -46,15 +46,27 @@ def verify_secret(secret: str, hashed: str) -> bool:
         return False
 
 
-def create_enrollment_code(db: Database, cfg: Config, *, is_admin: bool = False) -> dict:
+def create_enrollment_code(
+    db: Database, cfg: Config, *, is_admin: bool = False, station_id: int | None = None
+) -> dict:
+    """Одноразовый код регистрации.
+
+    `station_id` заполняется только сбросом ключа: такой код не заводит новую
+    станцию, а возвращает в строй указанную.
+    """
     code = new_enrollment_code()
     expires_at = in_hours(cfg.server.enrollment_ttl_hours)
     db.execute(
-        "INSERT INTO enrollment_codes (code, is_admin, expires_at, created_at)"
-        " VALUES (?,?,?,?)",
-        (code, int(is_admin), expires_at, utcnow()),
+        "INSERT INTO enrollment_codes (code, is_admin, station_id, expires_at, created_at)"
+        " VALUES (?,?,?,?,?)",
+        (code, int(is_admin), station_id, expires_at, utcnow()),
     )
-    return {"enrollment_code": code, "expires_at": expires_at, "is_admin": is_admin}
+    return {
+        "enrollment_code": code,
+        "expires_at": expires_at,
+        "is_admin": is_admin,
+        "station_id": station_id,
+    }
 
 
 def register_station(
@@ -67,7 +79,14 @@ def register_station(
     client_version: str | None,
     ip: str | None,
 ) -> dict:
-    """Обменять одноразовый код на постоянный ключ станции."""
+    """Обменять одноразовый код на постоянный ключ станции.
+
+    Кодов два вида. Обычный заводит новую станцию. Код, выданный сбросом ключа,
+    возвращает в строй ту же самую — с её id, входящими и историей. Иначе после
+    переустановки ПК станцию пришлось бы заводить заново под другим именем
+    (старое занято), а адресованные ей письма остались бы висеть на строке,
+    к которой уже никто не подключается.
+    """
     code = (code or "").strip().upper()
     row = db.one("SELECT * FROM enrollment_codes WHERE code = ?", (code,))
     if row is None:
@@ -76,6 +95,17 @@ def register_station(
         raise AuthError("Код регистрации уже использован", 403)
     if expired(row["expires_at"]):
         raise AuthError("Срок действия кода регистрации истёк", 403)
+
+    if row["station_id"] is not None:
+        return _restore_station(
+            db,
+            row["station_id"],
+            code,
+            display_name=display_name,
+            machine_name=machine_name,
+            client_version=client_version,
+            ip=ip,
+        )
 
     display_name = (display_name or "").strip() or (machine_name or "").strip()
     if not display_name:
@@ -109,6 +139,58 @@ def register_station(
         "secret": secret,
         "display_name": display_name,
         "is_admin": bool(row["is_admin"]),
+    }
+
+
+def _restore_station(
+    db: Database,
+    station_id: int,
+    code: str,
+    *,
+    display_name: str,
+    machine_name: str | None,
+    client_version: str | None,
+    ip: str | None,
+) -> dict:
+    """Регистрация по коду, выданному сбросом ключа: та же станция, новый ключ."""
+    station = db.one("SELECT * FROM stations WHERE id = ?", (station_id,))
+    if station is None:
+        raise AuthError("Станция, для которой выдан код, больше не существует", 404)
+
+    # Имя можно заодно и сменить — ПК могли переставить в другой кабинет.
+    display_name = (display_name or "").strip() or station["display_name"]
+    if display_name != station["display_name"] and db.one(
+        "SELECT id FROM stations WHERE display_name = ? AND id != ?",
+        (display_name, station_id),
+    ):
+        raise AuthError(f"Станция с именем «{display_name}» уже существует", 409)
+
+    secret = new_secret()
+    db.execute(
+        "UPDATE stations SET display_name = ?, machine_name = ?, secret_hash = ?,"
+        " last_ip = ?, client_version = ?, last_seen_at = ? WHERE id = ?",
+        (
+            display_name,
+            machine_name or station["machine_name"],
+            hash_secret(secret),
+            ip,
+            client_version or station["client_version"],
+            utcnow(),
+            station_id,
+        ),
+    )
+    # Токены, выданные до сброса, не должны пережить смену ключа.
+    db.execute("DELETE FROM tokens WHERE station_id = ?", (station_id,))
+    db.execute(
+        "UPDATE enrollment_codes SET used_at = ?, used_by = ? WHERE code = ?",
+        (utcnow(), station_id, code),
+    )
+    audit(db, station_id, "station.restore", station_id, display_name=display_name)
+    return {
+        "station_id": station_id,
+        "secret": secret,
+        "display_name": display_name,
+        "is_admin": bool(station["is_admin"]),
     }
 
 
@@ -180,11 +262,23 @@ def authenticate(db: Database, token: str | None) -> Station:
 
 
 def reset_station(db: Database, cfg: Config, station_id: int) -> dict:
-    """Отозвать ключ станции и выдать новый код регистрации."""
+    """Отозвать ключ станции и выдать новый код регистрации — для неё же.
+
+    Ключ обнуляется сразу, не дожидаясь повторной регистрации: между сбросом
+    и установкой клиента на новом ПК проходят часы, и всё это время старый
+    ключ работать не должен.
+    """
     row = db.one("SELECT id, is_admin FROM stations WHERE id = ?", (station_id,))
     if row is None:
         raise AuthError("Станция не найдена", 404)
     db.execute("DELETE FROM tokens WHERE station_id = ?", (station_id,))
-    db.execute("UPDATE stations SET secret_hash = ? WHERE id = ?", (new_secret(), station_id))
+    # В колонку кладётся именно хеш: в неё смотрит verify_secret, и значение
+    # в открытом виде было бы там действующим ключом.
+    db.execute(
+        "UPDATE stations SET secret_hash = ? WHERE id = ?",
+        (hash_secret(new_secret()), station_id),
+    )
     audit(db, station_id, "station.reset", station_id)
-    return create_enrollment_code(db, cfg, is_admin=bool(row["is_admin"]))
+    return create_enrollment_code(
+        db, cfg, is_admin=bool(row["is_admin"]), station_id=station_id
+    )

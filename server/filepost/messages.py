@@ -339,12 +339,22 @@ def _with_attachments(db: Database, item: dict) -> dict:
     return item
 
 
-def attachment_for_download(db: Database, station_id: int, attachment_id: int):
+def attachment_meta(db: Database, station_id: int, attachment_id: int):
+    """Вложение для того, кому оно вообще видно.
+
+    Отдельно от attachment_for_download: туда пускают только готовое, а сюда
+    отправитель ходит именно ради неготового — узнать, чем кончилась сборка (2.7).
+    Постороннему отвечаем 404, а не 403: id последовательные, и «нет доступа»
+    на чужом id — это уже ответ на вопрос, существует оно или нет.
+    """
     row = db.one("SELECT * FROM attachments WHERE id = ?", (attachment_id,))
-    if row is None:
+    if row is None or not _has_access(db, station_id, row["message_id"]):
         raise StorageError("Вложение не найдено", 404)
-    if not _has_access(db, station_id, row["message_id"]):
-        raise StorageError("Вложение не найдено", 404)
+    return row
+
+
+def attachment_for_download(db: Database, station_id: int, attachment_id: int):
+    row = attachment_meta(db, station_id, attachment_id)
     if row["state"] == "missing":
         raise StorageError("Файл отсутствует на сервере, обратитесь к администратору", 410)
     if row["state"] != "ready":

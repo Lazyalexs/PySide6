@@ -181,6 +181,11 @@ def test_chunk_reupload_overwrites(buh, sklad):
 
 
 def test_foreign_upload_session_rejected(buh, sklad):
+    """Сессия закрыта целиком: и дописать в неё, и просто посмотреть.
+
+    В статусе видно имя, размер и что уже долито — по нему соседний кабинет
+    читался бы как на ладони.
+    """
     message_id = buh.post(
         "/api/messages", json={"subject": "t", "body": "", "recipients": [sklad.station_id]}
     ).json()["message_id"]
@@ -188,8 +193,16 @@ def test_foreign_upload_session_rejected(buh, sklad):
         f"/api/messages/{message_id}/attachments/init",
         json={"name": "x.bin", "size": 10, "sha256": "a" * 64},
     ).json()
-    r = sklad.put(f"/api/uploads/{upload['upload_id']}/chunk/0", content=b"x" * 10)
-    assert r.status_code == 403
+    upload_id = upload["upload_id"]
+
+    assert sklad.put(f"/api/uploads/{upload_id}/chunk/0", content=b"x" * 10).status_code == 403
+    assert sklad.get(f"/api/uploads/{upload_id}/status").status_code == 403
+    assert sklad.post(f"/api/uploads/{upload_id}/commit").status_code == 403
+
+    # Владельцу — по-прежнему всё.
+    assert buh.get(f"/api/uploads/{upload_id}/status").status_code == 200
+    # Несуществующая сессия остаётся 404, а не превращается в 403.
+    assert buh.get("/api/uploads/00000000-0000-0000-0000-000000000000/status").status_code == 404
 
 
 def test_download_requires_access(buh, sklad, make_station):
@@ -199,6 +212,58 @@ def test_download_requires_access(buh, sklad, make_station):
     assert wait_ready(buh, attachment_id) == "ready"
     # Посторонняя станция не должна даже знать, что вложение существует.
     assert kadry.get(f"/api/attachments/{attachment_id}/download").status_code == 404
+
+
+def test_attachment_state_requires_access(buh, sklad, make_station):
+    """Состояние вложения — тоже доступ: в нём лежит имя файла.
+
+    Id последовательные, так что без проверки имена всех файлов в системе
+    достаются перебором, хотя скачать их и нельзя.
+    """
+    kadry = make_station("Кадры")
+    _, attachment_id = buh.send_file(
+        [sklad.station_id], os.urandom(256), name="зарплата.xlsx"
+    )
+    assert wait_ready(buh, attachment_id) == "ready"
+
+    assert kadry.get(f"/api/attachments/{attachment_id}").status_code == 404
+    # Отправителю и получателю оно по-прежнему видно.
+    assert buh.get(f"/api/attachments/{attachment_id}").status_code == 200
+    r = sklad.get(f"/api/attachments/{attachment_id}")
+    assert r.status_code == 200
+    assert r.json()["original_name"] == "зарплата.xlsx"
+
+
+def test_sender_sees_state_of_unsent_attachment(buh, sklad):
+    """Отправитель ходит сюда именно ради неготового: письмо ещё черновик (2.7)."""
+    message_id = buh.post(
+        "/api/messages", json={"subject": "t", "body": "", "recipients": [sklad.station_id]}
+    ).json()["message_id"]
+    upload = buh.post(
+        f"/api/messages/{message_id}/attachments/init",
+        json={"name": "x.bin", "size": 10, "sha256": "a" * 64},
+    ).json()
+    r = buh.get(f"/api/attachments/{upload['attachment_id']}")
+    assert r.status_code == 200
+    assert r.json()["state"] == "uploading"
+    # А получатель до отправки письма о вложении знать не должен.
+    assert sklad.get(f"/api/attachments/{upload['attachment_id']}").status_code == 404
+
+
+def test_broken_range_header_is_not_a_crash(buh, sklad):
+    """Мусор в заголовке — 416, а не 500: заголовки сочиняет не только наш клиент."""
+    _, attachment_id = buh.send_file([sklad.station_id], os.urandom(256))
+    assert wait_ready(buh, attachment_id) == "ready"
+    for header in ("bytes=abc-def", "bytes=-", "bytes=0-xyz", "bytes=--5"):
+        r = sklad.get(
+            f"/api/attachments/{attachment_id}/download", headers={"Range": header}
+        )
+        assert r.status_code == 416, f"{header} → {r.status_code}"
+    # Неизвестная единица измерения диапазоном не считается — отдаём файл целиком.
+    r = sklad.get(
+        f"/api/attachments/{attachment_id}/download", headers={"Range": "items=0-1"}
+    )
+    assert r.status_code == 200
 
 
 @pytest.mark.parametrize("payload_size", [0, 1, 1024 * 1024])

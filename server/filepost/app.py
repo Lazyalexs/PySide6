@@ -16,6 +16,7 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from . import __version__
 from . import housekeeper as hk
 from . import journal, messages as msg, recovery, storage
 from .auth import AuthError, Station, authenticate, create_enrollment_code, issue_token
@@ -90,7 +91,7 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
         keeper.stop()
         responder.stop()
 
-    app = FastAPI(title="FilePost", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(title="FilePost", version=__version__, lifespan=lifespan)
     slots = storage.DownloadSlots()
     app.state.cfg = cfg
     app.state.db = db
@@ -212,13 +213,7 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
 
     @app.put("/api/uploads/{upload_id}/chunk/{index}")
     async def put_chunk(upload_id: str, index: int, request: Request, station: Current) -> dict:
-        session = db.one(
-            "SELECT station_id FROM upload_sessions WHERE id = ?", (upload_id,)
-        )
-        if session is None:
-            raise StorageError("Сессия загрузки не найдена", 404)
-        if session["station_id"] != station.id:
-            raise StorageError("Чужая сессия загрузки", 403)
+        storage.own_session(db, upload_id, station.id)
 
         # Тело читаем потоком: файл целиком в память не поднимается никогда (2.7).
         chunks: list[bytes] = []
@@ -231,7 +226,7 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
 
     @app.get("/api/uploads/{upload_id}/status")
     def upload_status(upload_id: str, station: Current) -> dict:
-        return storage.session_status(db, upload_id)
+        return storage.session_status(storage.own_session(db, upload_id, station.id))
 
     @app.post("/api/uploads/{upload_id}/commit", status_code=202)
     async def commit(upload_id: str, station: Current) -> dict:
@@ -239,12 +234,7 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
 
         Для файла в 5 ГБ это чтение 5 ГБ с диска — держать на этом HTTP-запрос нельзя.
         """
-        session = db.one("SELECT * FROM upload_sessions WHERE id = ?", (upload_id,))
-        if session is None:
-            raise StorageError("Сессия загрузки не найдена", 404)
-        if session["station_id"] != station.id:
-            raise StorageError("Чужая сессия загрузки", 403)
-
+        session = storage.own_session(db, upload_id, station.id)
         attachment_id = session["attachment_id"]
         state = db.scalar("SELECT state FROM attachments WHERE id = ?", (attachment_id,))
         if state == "ready":
@@ -266,9 +256,9 @@ def create_app(cfg: Config, db: Database, *, background: bool = False) -> FastAP
 
     @app.get("/api/attachments/{attachment_id}")
     def attachment_state(attachment_id: int, station: Current) -> dict:
-        row = db.one("SELECT * FROM attachments WHERE id = ?", (attachment_id,))
-        if row is None:
-            raise StorageError("Вложение не найдено", 404)
+        # Проверка доступа обязательна и здесь: без неё имя любого файла в системе
+        # достаётся перебором id, хотя скачать его нельзя (2.10).
+        row = msg.attachment_meta(db, station.id, attachment_id)
         return {
             "attachment_id": row["id"],
             "state": row["state"],

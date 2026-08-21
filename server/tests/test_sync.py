@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from filepost.db import Database
 from helpers import wait_ready
 
@@ -138,6 +140,121 @@ def test_reset_revokes_key(buh, sklad):
               "client_version": "1.0.0"},
     )
     assert r.status_code == 401
+
+
+def test_reset_stores_hash_not_secret(buh, sklad, db):
+    """В secret_hash смотрит verify_secret: ключ в открытом виде там действующий."""
+    buh.post(f"/api/admin/stations/{sklad.station_id}/reset")
+    stored = db.scalar(
+        "SELECT secret_hash FROM stations WHERE id = ?", (sklad.station_id,)
+    )
+    assert stored.startswith("$argon2")
+
+
+def test_station_returns_after_reset(buh, sklad, client):
+    """Сброс ключа — это переустановка ПК, а не новая станция (2.10).
+
+    Станция возвращается со своим id, именем и входящими: письма, адресованные
+    ей до сброса, должны дойти до того же человека за тем же столом.
+    """
+    message_id, _ = buh.send_file([sklad.station_id], os.urandom(64), subject="до сброса")
+    code = buh.post(f"/api/admin/stations/{sklad.station_id}/reset").json()
+
+    assert code["station_id"] == sklad.station_id
+
+    r = client.post("/api/stations/register", json={
+        "enrollment_code": code["enrollment_code"], "display_name": "Склад",
+        "machine_name": "SKLAD-NEW", "client_version": "1.0.0"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["station_id"] == sklad.station_id
+    assert data["display_name"] == "Склад"
+    assert data["secret"] != sklad.secret
+
+    # Новым ключом станция входит и видит своё письмо.
+    r = client.post("/api/auth/token", json={
+        "station_id": data["station_id"], "secret": data["secret"],
+        "client_version": "1.0.0"})
+    assert r.status_code == 200, r.text
+    inbox = client.get(
+        "/api/inbox", headers={"Authorization": f"Bearer {r.json()['token']}"}
+    ).json()
+    assert [m["id"] for m in inbox] == [message_id]
+
+    # Дублей в адресной книге не появилось.
+    names = [s["display_name"] for s in buh.get("/api/directory").json()]
+    assert names.count("Склад") == 1
+
+
+def test_restore_code_is_single_use(buh, sklad, client):
+    code = buh.post(f"/api/admin/stations/{sklad.station_id}/reset").json()["enrollment_code"]
+    payload = {"enrollment_code": code, "display_name": "Склад",
+               "machine_name": "SKLAD", "client_version": "1.0.0"}
+    assert client.post("/api/stations/register", json=payload).status_code == 200
+    assert client.post("/api/stations/register", json=payload).status_code == 403
+
+
+def test_restore_can_rename_but_not_onto_a_taken_name(buh, sklad, client, make_station):
+    """ПК могли переставить в другой кабинет — имя сменить можно, занять чужое нет."""
+    make_station("Кадры")
+    code = buh.post(f"/api/admin/stations/{sklad.station_id}/reset").json()["enrollment_code"]
+
+    payload = {"enrollment_code": code, "display_name": "Кадры",
+               "machine_name": "SKLAD", "client_version": "1.0.0"}
+    assert client.post("/api/stations/register", json=payload).status_code == 409
+
+    payload["display_name"] = "Склад, окно 1"
+    r = client.post("/api/stations/register", json=payload)
+    assert r.status_code == 200, r.text
+    assert r.json()["station_id"] == sklad.station_id
+    assert r.json()["display_name"] == "Склад, окно 1"
+
+
+def test_station_id_column_added_to_existing_db(tmp_path, cfg):
+    """База на сервере живёт с первой установки: колонку надо дозаливать.
+
+    CREATE TABLE IF NOT EXISTS на существующей таблице не делает ничего, и без
+    ALTER TABLE служба после обновления падала бы на первом же коде регистрации.
+    """
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        "CREATE TABLE stations (id INTEGER PRIMARY KEY, display_name TEXT);"
+        "INSERT INTO stations (id, display_name) VALUES (42, 'Склад');"
+        "CREATE TABLE enrollment_codes ("
+        "  code TEXT PRIMARY KEY, is_admin INTEGER NOT NULL DEFAULT 0,"
+        "  expires_at TEXT NOT NULL, used_at TEXT,"
+        "  used_by INTEGER REFERENCES stations(id), created_at TEXT NOT NULL);"
+    )
+    conn.commit()
+    conn.close()
+
+    db = Database(path)
+    db.init_schema()
+    columns = {r["name"] for r in db.query("PRAGMA table_info(enrollment_codes)")}
+    assert "station_id" in columns
+
+    from filepost.auth import create_enrollment_code
+
+    assert create_enrollment_code(db, cfg, station_id=42)["station_id"] == 42
+    # Внешний ключ на дозалитой колонке действует: код не привяжется к небылице.
+    with pytest.raises(sqlite3.IntegrityError):
+        create_enrollment_code(db, cfg, station_id=999)
+    # Повторный запуск службы на уже обновлённой базе ничего не ломает.
+    db.init_schema()
+
+
+def test_ordinary_enrollment_still_creates_new_station(buh, client):
+    """Обычный код станцию по-прежнему заводит, а не возвращает."""
+    code = buh.post("/api/admin/enrollment").json()
+    assert code["station_id"] is None
+    r = client.post("/api/stations/register", json={
+        "enrollment_code": code["enrollment_code"], "display_name": "Кадры",
+        "machine_name": "KADRY", "client_version": "1.0.0"})
+    assert r.status_code == 200
+    assert r.json()["station_id"] != buh.station_id
 
 
 def test_health_reports_space(client):

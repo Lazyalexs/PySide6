@@ -274,7 +274,11 @@ class AdminStationsView(QWidget):
         except ApiError as exc:
             QMessageBox.warning(self, "FilePost", exc.message)
             return
-        self.hint.setText(f"Ключ отозван. Новый код регистрации: {result['enrollment_code']}")
+        self.hint.setText(
+            f"Ключ отозван. Новый код регистрации: {result['enrollment_code']}\n"
+            f"Код выдан этой же станции: клиент, зарегистрированный по нему, "
+            f"получит её имя, входящие и историю переписки."
+        )
         self.refresh()
 
     def _disable(self) -> None:

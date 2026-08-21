@@ -12,6 +12,8 @@ from typing import Any, Iterator
 
 import httpx
 
+from . import __version__
+
 log = logging.getLogger("filepost.api")
 
 
@@ -38,7 +40,9 @@ class ClientTooOld(ApiError):
 
 
 class ApiClient:
-    def __init__(self, base_url: str = "", timeout: float = 5.0, version: str = "1.0.0") -> None:
+    def __init__(
+        self, base_url: str = "", timeout: float = 5.0, version: str = __version__
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.version = version
         self.token: str = ""

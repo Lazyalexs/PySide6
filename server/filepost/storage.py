@@ -179,10 +179,27 @@ def write_chunk(db: Database, cfg: Config, upload_id: str, index: int, stream: I
     return written
 
 
-def session_status(db: Database, upload_id: str) -> dict:
+def own_session(db: Database, upload_id: str, station_id: int):
+    """Сессия загрузки, принадлежащая именно этой станции.
+
+    Одна точка проверки на все endpoint'ы сессии. Пока каждый проверял сам,
+    у /status проверки просто не оказалось, и по upload_id было видно, что и
+    какого размера заливает соседний кабинет.
+    """
     session = db.one("SELECT * FROM upload_sessions WHERE id = ?", (upload_id,))
     if session is None:
         raise StorageError("Сессия загрузки не найдена", 404)
+    if session["station_id"] != station_id:
+        raise StorageError("Чужая сессия загрузки", 403)
+    return session
+
+
+def session_status(session) -> dict:
+    """Что докачивать: строка сессии приходит из own_session, а не по id.
+
+    Так проверку владельца нельзя обойти, забыв её вызвать.
+    """
+    upload_id = session["id"]
     total_chunks = max(1, -(-session["total_size"] // session["chunk_size"]))
     return {
         "upload_id": upload_id,
@@ -294,19 +311,26 @@ def iter_range(path: Path, start: int, end: int) -> Iterator[bytes]:
 
 
 def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
-    """Разбор `Range: bytes=start-end`. Возвращает None, если заголовка нет."""
+    """Разбор `Range: bytes=start-end`. Возвращает None, если заголовка нет.
+
+    Заголовок приходит снаружи, и мусор в нём — это 416, а не 500: заголовки
+    сочиняет не только наш клиент, и падать на них служба не должна.
+    """
     if not header or not header.startswith("bytes="):
         return None
     spec = header[6:].split(",")[0].strip()
     start_s, _, end_s = spec.partition("-")
-    if start_s:
-        start = int(start_s)
-        end = int(end_s) if end_s else size - 1
-    else:
-        # bytes=-N — последние N байт
-        length = int(end_s or 0)
-        start = max(size - length, 0)
-        end = size - 1
+    try:
+        if start_s:
+            start = int(start_s)
+            end = int(end_s) if end_s else size - 1
+        else:
+            # bytes=-N — последние N байт
+            length = int(end_s or 0)
+            start = max(size - length, 0)
+            end = size - 1
+    except ValueError:
+        raise StorageError("Некорректный заголовок Range", 416) from None
     if start >= size or start > end:
         raise StorageError("Диапазон вне размера файла", 416)
     return start, min(end, size - 1)

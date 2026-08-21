@@ -26,9 +26,12 @@ CREATE TABLE IF NOT EXISTS stations (
     last_seen_at    TEXT
 );
 
+-- station_id заполнен, если код выдан сбросом ключа: тогда он возвращает в строй
+-- существующую станцию, а не заводит новую (2.10, 2.11).
 CREATE TABLE IF NOT EXISTS enrollment_codes (
     code        TEXT PRIMARY KEY,
     is_admin    INTEGER NOT NULL DEFAULT 0,
+    station_id  INTEGER REFERENCES stations(id),
     expires_at  TEXT NOT NULL,
     used_at     TEXT,
     used_by     INTEGER REFERENCES stations(id),
@@ -136,7 +139,22 @@ class Database:
 
     def init_schema(self) -> None:
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Дозаливка колонок в уже существующие базы.
+
+        CREATE TABLE IF NOT EXISTS на существующей таблице не делает ничего,
+        поэтому новые колонки приходится добавлять отдельно: база на сервере
+        живёт с первой установки, и пересоздать её нельзя — там переписка.
+        """
+        for table, column, definition in (
+            ("enrollment_codes", "station_id", "INTEGER REFERENCES stations(id)"),
+        ):
+            known = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if column not in known:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def query(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
         return self.conn.execute(sql, tuple(params)).fetchall()

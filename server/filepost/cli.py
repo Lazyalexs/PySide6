@@ -121,6 +121,8 @@ def cmd_station_reset(args: argparse.Namespace) -> int:
     result = reset_station(db, cfg, row["id"])
     print(f"Ключ станции «{args.name}» отозван.")
     print(f"Новый код регистрации: {result['enrollment_code']}")
+    print("Код выдан этой же станции: клиент, зарегистрированный по нему,")
+    print("получит её имя, входящие и историю переписки.")
     return 0
 
 

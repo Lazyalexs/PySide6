@@ -179,7 +179,7 @@ jobs:
             Тихая установка с предзаданным адресом сервера:
 
             ```
-            FilePost-Setup-1.0.2.exe /VERYSILENT /SERVER=filepost-srv:8080 /STATION="Бухгалтерия, окно 2"
+            FilePost-Setup-1.0.3.exe /VERYSILENT /SERVER=filepost-srv:8080 /STATION="Бухгалтерия, окно 2"
             ```
 
             Python и любые другие зависимости на целевых машинах не нужны.

@@ -2,13 +2,13 @@
 ;
 ;   1. pyinstaller filepost-server.spec  -> dist\filepost-server.exe
 ;   2. положить nssm.exe рядом с этим файлом
-;   3. ISCC.exe installer.iss            -> Output\FilePost-Server-Setup-1.0.0.exe
+;   3. ISCC.exe installer.iss            -> Output\FilePost-Server-Setup-1.0.3.exe
 ;
 ; Устанавливает службу целиком: exe, config.toml под выбранные пути, NSSM,
 ; правило брандмауэра, исключение Defender. Python на сервере не нужен.
 
 #define AppName        "FilePost Server"
-#define AppVersion     "1.0.2"
+#define AppVersion     "1.0.3"
 #define ServiceName    "FilePost"
 #define AppExe         "filepost-server.exe"
 #define DefaultPort    "50067"

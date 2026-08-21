@@ -45,7 +45,7 @@ rem Inno Setup ставится не всегда; без него остаёт�
 set ISCC="%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
 if exist %ISCC% (
     %ISCC% installer.iss || goto :error
-    echo     Установщик: client\Output\FilePost-Setup-1.0.0.exe
+    echo     Установщик: client\Output\FilePost-Setup-1.0.3.exe
 ) else (
     echo     ВНИМАНИЕ: Inno Setup 6 не найден, установщик не собран.
     echo     Скачайте https://jrsoftware.org/isdl.php — без него остаётся

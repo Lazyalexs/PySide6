@@ -32,7 +32,7 @@ python -m filepost.cli --config config.toml serve
 ```
 station list                 все станции, статус, версия клиента
 station enroll [--admin]     выдать код регистрации новой станции
-station reset <имя>          отозвать ключ, выдать новый код
+station reset <имя>          отозвать ключ, выдать новый код той же станции
 station admin <имя>          выдать или снять права администратора
 storage report               занято, свободно, ничейные, потерянные
 storage verify               сверка БД и диска
