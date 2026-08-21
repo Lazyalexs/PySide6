@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from .auth import create_enrollment_code, reset_station
-from .config import default_config_toml, load_config
+from .config import DEFAULT_PORT, DYNAMIC_PORT_START, default_config_toml, load_config
 from .db import Database
 from .recovery import verify_storage
 from .storage import reserved_bytes
@@ -37,7 +37,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         # получаются под него, а не под зашитый в код D:\FilePost.
         root = args.root or config_path.parent.resolve()
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(default_config_toml(root), encoding="utf-8")
+        config_path.write_text(default_config_toml(root, args.port), encoding="utf-8")
         print(f"Создан файл настроек: {config_path}")
 
     cfg, db = _open(args.config)
@@ -70,6 +70,16 @@ def cmd_init(args: argparse.Namespace) -> int:
     print("Станция получит права администратора.")
     print(f"Код действует до {result['expires_at']} и только один раз.")
     print(f"Код также сохранён в {code_file}")
+
+    if cfg.server.port >= DYNAMIC_PORT_START:
+        print()
+        print(f"ВНИМАНИЕ: порт {cfg.server.port} лежит в динамическом диапазоне Windows.")
+        print("Зарезервируйте его, иначе служба будет иногда не стартовать после")
+        print("перезагрузки — система может отдать порт исходящему соединению:")
+        print(
+            f"  netsh int ipv4 add excludedportrange protocol=tcp "
+            f"startport={cfg.server.port} numberofports=1"
+        )
     return 0
 
 
@@ -230,6 +240,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--root",
         default=None,
         help="каталог установки: под него подставляются пути в новом config.toml",
+    )
+    init.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"порт службы в новом config.toml (по умолчанию {DEFAULT_PORT})",
     )
     init.set_defaults(func=cmd_init)
 

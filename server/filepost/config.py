@@ -10,11 +10,26 @@ from typing import Any
 MB = 1024 * 1024
 GB = 1024 * MB
 
+#: Порт службы по умолчанию.
+#:
+#: Лежит в динамическом диапазоне Windows (49152-65535), откуда система раздаёт
+#: порты исходящим соединениям. Слушающая служба обычно занимает его нормально,
+#: но если к моменту старта порт уже занят чьим-то исходящим соединением, служба
+#: не поднимется — и это плавающий отказ «иногда не стартует после перезагрузки».
+#: Поэтому установщик резервирует порт через
+#:     netsh int ipv4 add excludedportrange protocol=tcp startport=... numberofports=1
+DEFAULT_PORT = 50067
+
+#: Начало динамического диапазона Windows: порты выше требуют резервирования.
+DYNAMIC_PORT_START = 49152
+
 
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
-    port: int = 8080
+    #: Непопулярный порт вместо 8080: на 8080 обычно уже что-то висит, и он
+    #: первым попадает под сканеры. Значение задаётся при установке.
+    port: int = DEFAULT_PORT
     token_ttl_hours: int = 12
     presence_timeout_sec: int = 45
     min_client_version: str = "1.0.0"
@@ -161,7 +176,7 @@ def _as_path(root: str | Path) -> PurePath:
     return PurePosixPath(text)
 
 
-def default_config_toml(root: str | Path = "D:\\FilePost") -> str:
+def default_config_toml(root: str | Path = "D:\\FilePost", port: int = DEFAULT_PORT) -> str:
     """Содержимое config.toml под конкретный каталог установки.
 
     Единственное место, где этот файл порождается: установщик вызывает
@@ -175,7 +190,7 @@ def default_config_toml(root: str | Path = "D:\\FilePost") -> str:
     return f"""\
 [server]
 host = "0.0.0.0"
-port = 8080
+port = {port}
 token_ttl_hours = 12
 presence_timeout_sec = 45
 min_client_version = "1.0.0"
