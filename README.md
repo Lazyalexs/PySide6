@@ -99,7 +99,7 @@ build.cmd
 ## Тесты
 
 ```bash
-cd server && python -m pytest tests/ -q     # 86
+cd server && python -m pytest tests/ -q     # 87
 cd client && python -m pytest tests/ -q     # 62
 ```
 

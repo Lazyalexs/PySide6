@@ -45,7 +45,24 @@ def setup_autostart(enabled: bool) -> None:
                 pass
 
 
+def configure_output() -> None:
+    """Та же защита, что и на сервере: перенаправленный stdout берёт кодировку
+    локали, и русский текст в ней может не представляться. У оконного клиента
+    потоков может не быть вовсе — это тоже учтено."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    configure_output()
     parser = argparse.ArgumentParser(prog="filepost", description="FilePost — клиент")
     parser.add_argument("--data-dir", default=None, help="каталог данных клиента")
     parser.add_argument("--minimized", action="store_true", help="стартовать свёрнутым")

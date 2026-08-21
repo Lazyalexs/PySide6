@@ -301,7 +301,31 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def configure_output() -> None:
+    """Вывод не должен падать из-за кодировки консоли.
+
+    Когда stdout перенаправлен в файл или канал, Python берёт кодировку локали:
+    на английской Windows это cp1252, где кириллицы нет вовсе, и первый же print
+    с русским текстом роняет команду целиком. Так падает установщик, читающий
+    вывод `init`, и служба под NSSM, пишущая stdout в журнал.
+
+    Настоящая консоль Unicode умеет сама, там достаточно подстраховки errors.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            if stream.isatty():
+                stream.reconfigure(errors="replace")
+            else:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            # Кодировку сменить не удалось — работаем как есть, но не падаем.
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    configure_output()
     args = build_parser().parse_args(argv)
     return args.func(args)
 

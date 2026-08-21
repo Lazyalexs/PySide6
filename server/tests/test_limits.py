@@ -9,6 +9,8 @@ import os
 import threading
 import time
 
+from pathlib import Path
+
 from filepost import housekeeper as hk
 from filepost.config import Config
 from filepost.db import Database
@@ -16,6 +18,7 @@ from filepost.storage import DownloadSlots
 from helpers import wait_ready
 
 OLD = "2020-01-01T00:00:00Z"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 # --------------------------------------------------------------------------- слоты
@@ -317,3 +320,31 @@ def test_init_refuses_second_run(tmp_path):
     )
     assert main(["--config", str(config), "init"]) == 0
     assert main(["--config", str(config), "init"]) == 1
+
+
+def test_cli_survives_non_unicode_locale(tmp_path):
+    """Вывод не должен падать из-за кодировки консоли.
+
+    На английской Windows перенаправленный stdout берёт cp1252, где кириллицы
+    нет вовсе. Так падал установщик, читающий вывод init, и служба под NSSM,
+    пишущая stdout в журнал.
+    """
+    import subprocess
+    import sys
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[storage]\npath = "storage"\ntmp_path = "tmp"\nmin_free_space_gb = 0\n'
+        "[backup]\nenabled = false\n",
+        encoding="utf-8",
+    )
+
+    env = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONPATH=str(ROOT))
+    result = subprocess.run(
+        [sys.executable, "-m", "filepost.cli", "--config", str(config), "init"],
+        capture_output=True,   # перенаправление: именно так ломалось
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert (tmp_path / "logs" / "enrollment-code.txt").exists()
+    assert "Код регистрации" in result.stdout.decode("utf-8", "replace")

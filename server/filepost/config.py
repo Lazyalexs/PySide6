@@ -122,8 +122,11 @@ def load_config(path: str | Path) -> Config:
     path = Path(path)
     cfg = Config(root=path.parent.resolve())
     if path.exists():
-        with path.open("rb") as fh:
-            raw = tomllib.load(fh)
+        # Читаем через utf-8-sig, а не tomllib.load(binary): Блокнот на Windows
+        # сохраняет UTF-8 с BOM, и tomllib на нём падает с невнятной ошибкой
+        # разбора. Администратор, поправивший config.toml в Блокноте, получил бы
+        # не запускающуюся службу и никакой подсказки почему.
+        raw = tomllib.loads(path.read_text(encoding="utf-8-sig"))
         for section in fields(Config):
             if section.name == "root":
                 continue

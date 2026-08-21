@@ -113,7 +113,9 @@ begin
     Content := Content + 'display_name = ' + Station + #13#10;
 
   if not FileExists(ConfigPath) then
-    SaveStringToFile(ConfigPath, Content, False);
+    { UTF-8: название станции содержит кириллицу, а клиент читает
+      config.ini как UTF-8. В ANSI он получил бы кракозябры. }
+    SaveStringToUTF8File(ConfigPath, Content, False);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

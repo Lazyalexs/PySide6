@@ -163,7 +163,10 @@ begin
     'max_subject_length = 200' + #13#10 +
     'max_body_length = 10000' + #13#10;
 
-  SaveStringToFile(Path, Content, False);
+  { Именно UTF-8: SaveStringToFile пишет в ANSI, и русские
+    комментарии превратились бы в байты cp1251, на которых
+    tomllib падает — служба не запустилась бы после установки. }
+  SaveStringToUTF8File(Path, Content, False);
 end;
 
 { Код регистрации первой станции показывается один раз. Пропустить его нельзя:

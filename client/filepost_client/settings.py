@@ -104,7 +104,10 @@ class Settings:
         if not self.config_path.exists():
             return self
         parser = configparser.ConfigParser()
-        parser.read(self.config_path, encoding="utf-8")
+        # utf-8-sig, а не utf-8: config.ini пишет установщик, а Блокнот на Windows
+        # добавляет BOM. Без этого configparser видит «﻿[server]» и не находит
+        # ни одной секции — клиент молча теряет адрес сервера.
+        parser.read(self.config_path, encoding="utf-8-sig")
         for name, target in (
             ("server", self.server),
             ("station", self.station),
