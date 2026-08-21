@@ -121,15 +121,23 @@ def test_sound_is_short_enough_for_a_notification():
 
 
 def test_sound_fades_out_without_click():
-    """Обрезка без затухания даёт щелчок на конце."""
+    """Обрезка без затухания даёт щелчок на конце.
+
+    Меряем самую границу — последнюю миллисекунду, а не длинное окно: щелчок
+    возникает от разрыва на стыке, а не от того, что сигнал вообще ещё звучит
+    за десяток миллисекунд до конца. Порог берём от полной шкалы, потому что
+    слышимость разрыва зависит от абсолютного уровня, а не от пика этого клипа.
+    """
     import struct
 
     with wave.open(str(sound.resource_path()), "rb") as handle:
+        rate = handle.getframerate()
         frames = handle.getnframes()
         samples = struct.unpack(f"<{frames}h", handle.readframes(frames))
-    tail = max(abs(x) for x in samples[-200:])
-    peak = max(abs(x) for x in samples)
-    assert tail < peak * 0.02, f"хвост {tail} при пике {peak} — будет слышен обрыв"
+
+    boundary = max(1, rate // 1000)  # последняя миллисекунда
+    tail = max(abs(x) for x in samples[-boundary:])
+    assert tail < 0.01 * 32767, f"на срезе амплитуда {tail} — будет слышен щелчок"
 
 
 def test_sound_disabled_does_nothing():
