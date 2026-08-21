@@ -250,3 +250,44 @@ def test_discovery_disabled_by_default(cfg: Config):
     responder = DiscoveryResponder(cfg)
     responder.start()
     assert responder._thread is None, "по умолчанию автопоиск выключен"
+
+
+def test_backup_to_unreachable_disk_does_not_break_sweep(cfg: Config, db: Database):
+    """Каталог бэкапа лежит на другом физическом диске — а он может отвалиться.
+
+    Отключили внешний, размонтировали сетевой, заменили после сбоя. Уборка из-за
+    этого падать не должна: иначе перестают работать и обрезка журнала, и уборка
+    tmp\\, и предупреждение о месте.
+    """
+    cfg.backup.path = "Z:\\нет-такого-диска" if os.name == "nt" else "/proc/нельзя/сюда"
+    cfg.backup.time = "00:00"
+
+    report = hk.sweep(db, cfg)  # не должно бросить исключение
+
+    assert report.backup_path is None
+    assert report.backup_error, "молча не работающий бэкап хуже, чем его отсутствие"
+
+    actions = {r["action"] for r in db.query("SELECT action FROM audit_log")}
+    assert "db.backup_failed" in actions, "провал бэкапа обязан попасть в аудит"
+
+
+def test_backup_failure_visible_to_admin(buh, sklad, cfg: Config):
+    """Администратор должен увидеть провал бэкапа в разделе «Хранилище»."""
+    cfg.backup.path = "Z:\\нет-такого-диска" if os.name == "nt" else "/proc/нельзя/сюда"
+    cfg.backup.time = "00:00"
+
+    r = buh.post("/api/admin/housekeeping")
+    assert r.status_code == 200, "endpoint не должен отдавать 500"
+    assert r.json()["backup_error"]
+
+
+def test_sweep_continues_after_backup_failure(buh, sklad, cfg: Config, db: Database):
+    """Остальная уборка выполняется, даже если бэкап не удался."""
+    cfg.backup.path = "Z:\\нет-такого-диска" if os.name == "nt" else "/proc/нельзя/сюда"
+    cfg.backup.time = "00:00"
+    buh.send_file([sklad.station_id], os.urandom(64))
+    db.execute("UPDATE events SET created_at = ?", (OLD,))
+
+    report = hk.sweep(db, cfg)
+    assert report.backup_error
+    assert report.events_trimmed > 0, "обрезка журнала должна была отработать"

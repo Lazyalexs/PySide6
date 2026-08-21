@@ -27,6 +27,10 @@ log = logging.getLogger("filepost.housekeeper")
 TICK_SECONDS = 300
 
 
+class BackupFailed(Exception):
+    """Каталог резервных копий недоступен. Не повод ронять уборку, но повод шуметь."""
+
+
 @dataclass
 class SweepReport:
     stale_reservations: int = 0
@@ -36,6 +40,7 @@ class SweepReport:
     retention_deleted: list[int] = field(default_factory=list)
     retention_warned: list[int] = field(default_factory=list)
     backup_path: str | None = None
+    backup_error: str | None = None
     low_space: bool = False
 
     def as_dict(self) -> dict:
@@ -47,6 +52,7 @@ class SweepReport:
             "retention_deleted": self.retention_deleted,
             "retention_warned": self.retention_warned,
             "backup_path": self.backup_path,
+            "backup_error": self.backup_error,
             "low_space": self.low_space,
         }
 
@@ -59,6 +65,7 @@ class SweepReport:
             or self.retention_deleted
             or self.retention_warned
             or self.backup_path
+            or self.backup_error
             or self.low_space
         )
 
@@ -224,16 +231,26 @@ def daily_backup(db: Database, cfg: Config, *, force: bool = False) -> str | Non
     stamp = date.today().isoformat()
     target = target_dir / f"filepost-{stamp}.db"
 
-    if not force:
-        if target.exists():
-            return None
-        hour, _, minute = cfg.backup.time.partition(":")
-        current = now()
-        if (current.hour, current.minute) < (int(hour), int(minute or 0)):
-            return None
+    try:
+        if not force:
+            if target.exists():
+                return None
+            hour, _, minute = cfg.backup.time.partition(":")
+            current = now()
+            if (current.hour, current.minute) < (int(hour), int(minute or 0)):
+                return None
 
-    db.backup_to(target)
-    _rotate_backups(target_dir, cfg.backup.keep_copies)
+        db.backup_to(target)
+        _rotate_backups(target_dir, cfg.backup.keep_copies)
+    except OSError as exc:
+        # Каталог бэкапа по замыслу лежит на другом физическом диске — а другой
+        # диск это ровно то, что может отвалиться: отключили внешний, размонтировали
+        # сетевой, заменили после сбоя. Уборка из-за этого падать не должна, но и
+        # молчать нельзя: незаметно не работающий бэкап хуже, чем его отсутствие.
+        log.error("НЕ УДАЛОСЬ СОЗДАТЬ РЕЗЕРВНУЮ КОПИЮ в %s: %s", target_dir, exc)
+        audit(db, None, "db.backup_failed", None, path=str(target_dir), error=str(exc))
+        raise BackupFailed(str(exc)) from exc
+
     audit(db, None, "db.backup", None, path=str(target), size=target.stat().st_size)
     log.info("резервная копия базы: %s (%s)", target, human_size(target.stat().st_size))
     return str(target)
@@ -278,7 +295,10 @@ def sweep(db: Database, cfg: Config, *, force_backup: bool = False) -> SweepRepo
     deleted, warned = apply_retention(db, cfg)
     report.retention_deleted = deleted + delete_orphaned(db, cfg)
     report.retention_warned = warned
-    report.backup_path = daily_backup(db, cfg, force=force_backup)
+    try:
+        report.backup_path = daily_backup(db, cfg, force=force_backup)
+    except BackupFailed as exc:
+        report.backup_error = str(exc)
     report.low_space = check_space(db, cfg)
 
     if not report.is_empty():

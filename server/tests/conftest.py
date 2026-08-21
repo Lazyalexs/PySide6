@@ -25,6 +25,9 @@ def cfg(tmp_path: Path) -> Config:
         min_free_space_gb=0,
         max_file_size_gb=1,
     )
+    # По умолчанию бэкап уходит на E:\ — на машине без такого диска тесты
+    # ломались бы о реальную файловую систему вместо проверки логики.
+    cfg.backup.path = str(tmp_path / "backups")
     cfg.ensure_dirs()
     return cfg
 
