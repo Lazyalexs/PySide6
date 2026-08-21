@@ -105,68 +105,86 @@ Type: filesandordirs; Name: "{app}\logs"
 [Code]
 var
   CodePage: TOutputMsgMemoWizardPage;
+  Lines: TArrayOfString;
+
+{ Копим строки в массиве, а не в одной строке с CRLF: писать нужно
+  через SaveStringsToUTF8FileWithoutBOM, а она принимает именно массив.
+  SaveStringToFile здесь не годится — она пишет в ANSI, и русские
+  комментарии стали бы байтами cp1251, невалидным UTF-8, на котором
+  tomllib падает: служба не запустилась бы после установки вовсе. }
+procedure Add(const S: String);
+begin
+  SetArrayLength(Lines, GetArrayLength(Lines) + 1);
+  Lines[GetArrayLength(Lines) - 1] := S;
+end;
 
 { config.toml генерируется под фактический каталог установки. Иначе пришлось бы
   просить администратора править пути руками, а это первая же ошибка развёртывания. }
 procedure WriteConfig();
 var
-  Path, Content, Backup: String;
+  Path: String;
 begin
   Path := ExpandConstant('{app}\config.toml');
   if FileExists(Path) then
     Exit;  { не затираем настройки при обновлении }
 
-  { Бэкап по умолчанию — на другой диск. Копия рядом с оригиналом защищает
-    ровно от одного сценария и бесполезна в том, ради чего делается. }
-  Backup := 'E:\\Backup\\FilePost';
+  SetArrayLength(Lines, 0);
 
-  Content :=
-    '[server]' + #13#10 +
-    'host = "0.0.0.0"' + #13#10 +
-    'port = 8080' + #13#10 +
-    'token_ttl_hours = 12' + #13#10 +
-    'presence_timeout_sec = 45' + #13#10 +
-    'min_client_version = "1.0.0"' + #13#10 +
-    'discovery_enabled = false' + #13#10 +
-    'discovery_port = 8081' + #13#10 + #13#10 +
-    '[storage]' + #13#10 +
-    'path = "' + ExpandConstant('{app}\storage') + '"' + #13#10 +
-    'tmp_path = "' + ExpandConstant('{app}\tmp') + '"' + #13#10 +
-    'chunk_size_mb = 16' + #13#10 +
-    'min_free_space_gb = 50' + #13#10 +
-    'max_file_size_gb = 20' + #13#10 + #13#10 +
-    '[retention]' + #13#10 +
-    'enabled = false' + #13#10 +
-    'delete_after_download_days = 7' + #13#10 +
-    'delete_never_downloaded_days = 30' + #13#10 +
-    'notify_sender_before_days = 2' + #13#10 +
-    'delete_orphaned = false' + #13#10 + #13#10 +
-    '[cleanup]' + #13#10 +
-    'abandoned_uploads_hours = 48' + #13#10 +
-    'reservation_idle_hours = 2' + #13#10 +
-    'events_retention_days = 30' + #13#10 + #13#10 +
-    '[backup]' + #13#10 +
-    '# ВАЖНО: путь должен указывать на ДРУГОЙ физический диск.' + #13#10 +
-    '# Копия рядом с оригиналом защищает только от случайного удаления' + #13#10 +
-    '# и бесполезна в том, ради чего бэкап делается. Если такого диска' + #13#10 +
-    '# на сервере нет, поправьте путь — иначе в журнале будет ошибка' + #13#10 +
-    '# db.backup_failed при каждом прогоне уборки.' + #13#10 +
-    'enabled = true' + #13#10 +
-    'path = "' + Backup + '"' + #13#10 +
-    'time = "03:00"' + #13#10 +
-    'keep_copies = 14' + #13#10 + #13#10 +
-    '[limits]' + #13#10 +
-    'max_parallel_uploads_per_user = 2' + #13#10 +
-    'max_parallel_downloads_per_user = 2' + #13#10 +
-    'max_recipients_per_message = 20' + #13#10 +
-    'max_attachments_per_message = 50' + #13#10 +
-    'max_subject_length = 200' + #13#10 +
-    'max_body_length = 10000' + #13#10;
+  Add('[server]');
+  Add('host = "0.0.0.0"');
+  Add('port = 8080');
+  Add('token_ttl_hours = 12');
+  Add('presence_timeout_sec = 45');
+  Add('min_client_version = "1.0.0"');
+  Add('discovery_enabled = false');
+  Add('discovery_port = 8081');
+  Add('');
 
-  { Именно UTF-8: SaveStringToFile пишет в ANSI, и русские
-    комментарии превратились бы в байты cp1251, на которых
-    tomllib падает — служба не запустилась бы после установки. }
-  SaveStringToUTF8File(Path, Content, False);
+  Add('[storage]');
+  { Пути с двойными слэшами: в TOML обратный слэш внутри строки — экранирование. }
+  Add('path = "' + ExpandConstant('{app}\storage') + '"');
+  Add('tmp_path = "' + ExpandConstant('{app}\tmp') + '"');
+  Add('chunk_size_mb = 16');
+  Add('min_free_space_gb = 50');
+  Add('max_file_size_gb = 20');
+  Add('');
+
+  Add('[retention]');
+  Add('# ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНО: ничего не удаляется само.');
+  Add('enabled = false');
+  Add('delete_after_download_days = 7');
+  Add('delete_never_downloaded_days = 30');
+  Add('notify_sender_before_days = 2');
+  Add('delete_orphaned = false');
+  Add('');
+
+  Add('[cleanup]');
+  Add('abandoned_uploads_hours = 48');
+  Add('reservation_idle_hours = 2');
+  Add('events_retention_days = 30');
+  Add('');
+
+  Add('[backup]');
+  Add('# ВАЖНО: путь должен указывать на ДРУГОЙ физический диск.');
+  Add('# Копия рядом с оригиналом защищает только от случайного удаления');
+  Add('# и бесполезна в том, ради чего бэкап делается. Если такого диска');
+  Add('# на сервере нет, поправьте путь: иначе в журнале будет ошибка');
+  Add('# db.backup_failed при каждом прогоне уборки.');
+  Add('enabled = true');
+  Add('path = "E:\\Backup\\FilePost"');
+  Add('time = "03:00"');
+  Add('keep_copies = 14');
+  Add('');
+
+  Add('[limits]');
+  Add('max_parallel_uploads_per_user = 2');
+  Add('max_parallel_downloads_per_user = 2');
+  Add('max_recipients_per_message = 20');
+  Add('max_attachments_per_message = 50');
+  Add('max_subject_length = 200');
+  Add('max_body_length = 10000');
+
+  SaveStringsToUTF8FileWithoutBOM(Path, Lines, False);
 end;
 
 { Код регистрации первой станции показывается один раз. Пропустить его нельзя:
@@ -178,20 +196,20 @@ end;
 function RunInit(): String;
 var
   ResultCode: Integer;
-  Lines: TArrayOfString;
+  Found: TArrayOfString;
 begin
   Exec(ExpandConstant('{app}\{#AppExe}'),
        '--config "' + ExpandConstant('{app}\config.toml') + '" init',
        ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-  if LoadStringsFromFile(ExpandConstant('{app}\logs\enrollment-code.txt'), Lines) then
-    if GetArrayLength(Lines) > 0 then
+  if LoadStringsFromFile(ExpandConstant('{app}\logs\enrollment-code.txt'), Found) then
+    if GetArrayLength(Found) > 0 then
     begin
       Result :=
         'Код регистрации первой станции:' + #13#10 + #13#10 +
-        '        ' + Trim(Lines[0]) + #13#10 + #13#10 +
+        '        ' + Trim(Found[0]) + #13#10 + #13#10 +
         'Действует 24 часа и только один раз.' + #13#10 +
-        'Станция, зарегистрированная по нему, получит права администратора —' + #13#10 +
+        'Станция, зарегистрированная по нему, получит права администратора:' + #13#10 +
         'с неё выдаются коды остальным станциям.';
       Exit;
     end;
@@ -208,7 +226,7 @@ begin
   CodePage := CreateOutputMsgMemoPage(
     wpInstalling,
     'Код регистрации первой станции',
-    'Запишите его — он показывается один раз',
+    'Запишите его: он показывается один раз',
     'Без этого кода не зарегистрировать ни одного клиента.',
     '');
 end;

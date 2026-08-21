@@ -74,6 +74,17 @@ Type: dirifempty; Name: "{app}"
   регистрации. Это то, ради чего пункт 3 раздела 4 архитектуры существует:
   пользователю вводить адрес не нужно. }
 
+var
+  Lines: TArrayOfString;
+
+{ Вложенные процедуры Pascal Script в Inno Setup не поддерживает,
+  поэтому и накопитель строк, и массив живут на верхнем уровне. }
+procedure Add(const S: String);
+begin
+  SetArrayLength(Lines, GetArrayLength(Lines) + 1);
+  Lines[GetArrayLength(Lines) - 1] := S;
+end;
+
 function GetCmdLineParam(const Key: String): String;
 var
   I: Integer;
@@ -93,7 +104,7 @@ end;
 
 procedure WriteDeploymentConfig();
 var
-  ConfigPath, Server, Station, Content: String;
+  ConfigPath, Server, Station: String;
 begin
   Server := GetCmdLineParam('/SERVER');
   Station := GetCmdLineParam('/STATION');
@@ -102,20 +113,25 @@ begin
 
   ConfigPath := ExpandConstant('{localappdata}\FilePost\config.ini');
   ForceDirectories(ExpandConstant('{localappdata}\FilePost'));
+  if FileExists(ConfigPath) then
+    Exit;  { не затираем настройки уже работающей станции }
 
-  { Пишем только параметры развёртывания. Ключ станции сюда не попадает —
+  SetArrayLength(Lines, 0);
+
+  { Пишем только параметры развёртывания. Ключ станции сюда не попадает:
     он выдаётся сервером при регистрации и появится в файле позже. }
-  Content := '[server]' + #13#10;
+  Add('[server]');
   if Server <> '' then
-    Content := Content + 'url = http://' + Server + #13#10;
-  Content := Content + #13#10 + '[station]' + #13#10;
+    Add('url = http://' + Server);
+  Add('');
+  Add('[station]');
   if Station <> '' then
-    Content := Content + 'display_name = ' + Station + #13#10;
+    Add('display_name = ' + Station);
 
-  if not FileExists(ConfigPath) then
-    { UTF-8: название станции содержит кириллицу, а клиент читает
-      config.ini как UTF-8. В ANSI он получил бы кракозябры. }
-    SaveStringToUTF8File(ConfigPath, Content, False);
+  { Именно UTF-8: название станции содержит кириллицу, а клиент читает
+    config.ini как UTF-8. SaveStringToFile записала бы ANSI, и вместо
+    «Бухгалтерия, окно 2» получились бы кракозябры. }
+  SaveStringsToUTF8FileWithoutBOM(ConfigPath, Lines, False);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
