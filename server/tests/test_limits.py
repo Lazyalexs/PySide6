@@ -276,3 +276,44 @@ def test_no_warning_when_retention_disabled(buh, sklad, cfg: Config, db: Databas
     assert wait_ready(buh, attachment_id) == "ready"
     db.execute("UPDATE messages SET sent_at = ? WHERE id = ?", (OLD, message_id))
     assert hk.apply_retention(db, cfg) == ([], [])
+
+
+# --------------------------------------------------------------------------- упаковка
+
+
+def test_init_writes_ascii_code_file(tmp_path, monkeypatch):
+    """Установщик читает код из файла, а не из вывода консоли.
+
+    В выводе русский текст в кодировке консоли — в мастере он превратился бы
+    в кракозябры. Сам код чистый ASCII, поэтому читается однозначно.
+    """
+    from filepost.cli import main
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[storage]\npath = "storage"\ntmp_path = "tmp"\nmin_free_space_gb = 0\n'
+        "[backup]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    assert main(["--config", str(config), "init"]) == 0
+
+    code_file = tmp_path / "logs" / "enrollment-code.txt"
+    assert code_file.exists(), "установщику нечего будет показать администратору"
+
+    code = code_file.read_text(encoding="ascii").strip()
+    assert len(code) == 14 and code.count("-") == 2, code
+    assert code.replace("-", "").isalnum() and code.isupper()
+
+
+def test_init_refuses_second_run(tmp_path):
+    """Повторный init не должен затирать существующую базу."""
+    from filepost.cli import main
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        '[storage]\npath = "storage"\ntmp_path = "tmp"\nmin_free_space_gb = 0\n'
+        "[backup]\nenabled = false\n",
+        encoding="utf-8",
+    )
+    assert main(["--config", str(config), "init"]) == 0
+    assert main(["--config", str(config), "init"]) == 1

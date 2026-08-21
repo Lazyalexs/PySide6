@@ -1,0 +1,185 @@
+name: Сборка установщиков
+
+# Собирается на Windows-раннере GitHub: PyInstaller не умеет кросс-компиляцию,
+# .exe для Windows собирается только на Windows. Благодаря этому на своей машине
+# ставить не нужно ничего — готовые установщики скачиваются из Artifacts,
+# а по тегу попадают в Releases.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:      # кнопка «Run workflow» на вкладке Actions
+
+env:
+  PYTHON_VERSION: "3.12"
+  NSSM_URL: "https://nssm.cc/release/nssm-2.24.zip"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write     # нужно шагу «Создать релиз»
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # ---------------------------------------------------------------- сервер
+
+      - name: Сервер — зависимости
+        working-directory: server
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Сервер — тесты
+        working-directory: server
+        run: python -m pytest tests -q
+
+      - name: Сервер — сборка exe
+        working-directory: server
+        run: pyinstaller --clean --noconfirm filepost-server.spec
+
+      # NSSM кладём в дистрибутив: в закрытом контуре его скачать неоткуда,
+      # а без него служба не регистрируется. NSSM — public domain.
+      - name: Скачать NSSM
+        working-directory: server
+        run: |
+          Invoke-WebRequest -Uri "$env:NSSM_URL" -OutFile nssm.zip
+          Expand-Archive nssm.zip -DestinationPath nssm-tmp
+          Copy-Item nssm-tmp\nssm-2.24\win64\nssm.exe -Destination nssm.exe
+          Remove-Item nssm.zip, nssm-tmp -Recurse -Force
+
+      # ---------------------------------------------------------------- клиент
+
+      - name: Клиент — зависимости
+        working-directory: client
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Клиент — тесты
+        working-directory: client
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests -q
+
+      - name: Клиент — сборка exe
+        working-directory: client
+        run: pyinstaller --clean --noconfirm filepost.spec
+
+      # ---------------------------------------------------------------- установщики
+
+      - name: Установить Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Собрать установщик сервера
+        working-directory: server
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Собрать установщик клиента
+        working-directory: client
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+
+      # ---------------------------------------------------------------- проверка
+
+      # Собранный exe может упасть при старте на том, чего не видит статический
+      # анализ импортов, — тесты этого не ловят. Поэтому дёргаем его вживую.
+      - name: Проверить, что собранный сервер работает
+        working-directory: server
+        run: |
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          Set-Location smoke
+          @"
+          [server]
+          host = "127.0.0.1"
+          port = 8123
+          [storage]
+          path = "storage"
+          tmp_path = "tmp"
+          min_free_space_gb = 0
+          [backup]
+          enabled = false
+          "@ | Set-Content config.toml -Encoding UTF8
+
+          & ..\dist\filepost-server.exe --config config.toml init
+          if ($LASTEXITCODE -ne 0) { throw "init упал" }
+          if (-not (Test-Path logs\enrollment-code.txt)) { throw "init не сохранил код" }
+          $code = (Get-Content logs\enrollment-code.txt -Raw).Trim()
+          if ($code -notmatch "^[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}$") {
+            throw "код регистрации неожиданного вида: $code"
+          }
+          Write-Host "Код регистрации получен: $code"
+
+          $svc = Start-Process ..\dist\filepost-server.exe `
+              -ArgumentList "--config","config.toml","serve" -PassThru
+          try {
+            $ok = $false
+            foreach ($i in 1..30) {
+              Start-Sleep -Seconds 1
+              try {
+                $r = Invoke-RestMethod http://127.0.0.1:8123/api/health -TimeoutSec 3
+                if ($r.status -eq "ok") { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { throw "собранный сервер не отвечает на /api/health" }
+            Write-Host "Собранный сервер поднялся и отвечает"
+          } finally {
+            Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      # ---------------------------------------------------------------- выкладка
+
+      - name: Выложить установщики
+        uses: actions/upload-artifact@v4
+        with:
+          name: FilePost-installers
+          retention-days: 90
+          path: |
+            server/Output/*.exe
+            client/Output/*.exe
+
+      # Отдельно кладём голые exe: пригодятся при ручном обновлении, когда
+      # переустанавливать целиком не хочется.
+      - name: Выложить отдельные exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: FilePost-binaries
+          retention-days: 30
+          path: |
+            server/dist/filepost-server.exe
+            client/dist/FilePost.exe
+
+      - name: Создать релиз
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            server/Output/*.exe
+            client/Output/*.exe
+          body: |
+            ## Установка
+
+            **Сервер** — `FilePost-Server-Setup-*.exe`, от имени администратора.
+            Ставит службу, открывает порт, заводит исключение антивируса
+            и показывает код регистрации первой станции. Запишите его:
+            он показывается один раз.
+
+            **Клиент** — `FilePost-Setup-*.exe` на каждую станцию.
+            Прав администратора не требует.
+
+            Тихая установка с предзаданным адресом сервера:
+
+            ```
+            FilePost-Setup-1.0.0.exe /VERYSILENT /SERVER=filepost-srv:8080 /STATION="Бухгалтерия, окно 2"
+            ```
+
+            Python и любые другие зависимости на целевых машинах не нужны.

@@ -37,18 +37,35 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"Создан файл настроек: {config_path}")
 
     cfg, db = _open(args.config)
-    if db.scalar("SELECT COUNT(*) FROM stations"):
-        print("База уже инициализирована, станции существуют.", file=sys.stderr)
-        print("Для новой станции используйте: filepost-admin station enroll", file=sys.stderr)
+    # Проверяем не только станции, но и уже выданные коды: иначе повторный init
+    # до регистрации первой станции выдал бы второй административный код,
+    # и права администратора смогла бы забрать посторонняя машина.
+    if db.scalar("SELECT COUNT(*) FROM stations") or db.scalar(
+        "SELECT COUNT(*) FROM enrollment_codes"
+    ):
+        print("База уже инициализирована.", file=sys.stderr)
+        print("Новый код для станции:  filepost-server station enroll", file=sys.stderr)
+        print(
+            "Если потерян доступ администратора:  station enroll --admin",
+            file=sys.stderr,
+        )
         return 1
 
     result = create_enrollment_code(db, cfg, is_admin=True)
+
+    # Код дублируется в отдельный файл: его читает установщик, чтобы показать
+    # администратору. Разбирать вывод консоли для этого нельзя — там русский
+    # текст в кодировке консоли, а код здесь чистый ASCII.
+    code_file = cfg.logs_path / "enrollment-code.txt"
+    code_file.write_text(result["enrollment_code"], encoding="ascii")
+
     print(f"База данных создана: {cfg.db_path}")
     print(f"Хранилище: {cfg.storage_path}")
     print()
     print(f"Код регистрации первой станции: {result['enrollment_code']}")
     print("Станция получит права администратора.")
     print(f"Код действует до {result['expires_at']} и только один раз.")
+    print(f"Код также сохранён в {code_file}")
     return 0
 
 
