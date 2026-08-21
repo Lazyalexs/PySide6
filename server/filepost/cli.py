@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from .auth import create_enrollment_code, reset_station
-from .config import DEFAULT_CONFIG_TOML, load_config
+from .config import default_config_toml, load_config
 from .db import Database
 from .recovery import verify_storage
 from .storage import reserved_bytes
@@ -32,8 +32,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     клиента, но клиента ещё нет ни на одной машине."""
     config_path = Path(args.config)
     if not config_path.exists():
+        # Каталог по умолчанию — тот, где лежит сам config.toml: установщик
+        # передаёт сюда фактический каталог установки, и пути в конфиге
+        # получаются под него, а не под зашитый в код D:\FilePost.
+        root = args.root or config_path.parent.resolve()
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
+        config_path.write_text(default_config_toml(root), encoding="utf-8")
         print(f"Создан файл настроек: {config_path}")
 
     cfg, db = _open(args.config)
@@ -221,9 +225,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config.toml", help="путь к config.toml")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="создать БД и код регистрации первой станции").set_defaults(
-        func=cmd_init
+    init = sub.add_parser("init", help="создать БД и код регистрации первой станции")
+    init.add_argument(
+        "--root",
+        default=None,
+        help="каталог установки: под него подставляются пути в новом config.toml",
     )
+    init.set_defaults(func=cmd_init)
 
     serve = sub.add_parser("serve", help="запустить сервер")
     serve.set_defaults(func=cmd_serve)

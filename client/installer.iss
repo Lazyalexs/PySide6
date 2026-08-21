@@ -7,7 +7,7 @@
 ; на семь станций проще, когда установщик не спрашивает пароль админа.
 
 #define AppName        "FilePost"
-#define AppVersion     "1.0.0"
+#define AppVersion     "1.0.1"
 #define AppPublisher   "FilePost"
 #define AppExe         "FilePost.exe"
 

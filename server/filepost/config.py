@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass, field, fields, is_dataclass
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
 MB = 1024 * 1024
@@ -136,7 +136,43 @@ def load_config(path: str | Path) -> Config:
     return cfg
 
 
-DEFAULT_CONFIG_TOML = """\
+def toml_string(value: str) -> str:
+    """Строка для TOML с правильным экранированием.
+
+    Обратный слэш внутри двойных кавычек TOML считает экранированием, поэтому
+    "C:\\FilePost\\storage" — синтаксическая ошибка, а не путь. На это легко
+    наступить именно с путями Windows, и разбор падает уже при старте службы.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+#: Заглушка, которую администратор обязан поправить под свой второй диск.
+BACKUP_HINT = "E:\\Backup\\FilePost"
+
+
+def _as_path(root: str | Path) -> PurePath:
+    """Разбирать путь по правилам той системы, откуда он пришёл, а не той,
+    где выполняется код: иначе config.toml, сгенерированный для Windows,
+    получит смешанные разделители при сборке или проверке на Linux."""
+    text = str(root)
+    if "\\" in text or (len(text) > 1 and text[1] == ":"):
+        return PureWindowsPath(text)
+    return PurePosixPath(text)
+
+
+def default_config_toml(root: str | Path = "D:\\FilePost") -> str:
+    """Содержимое config.toml под конкретный каталог установки.
+
+    Единственное место, где этот файл порождается: установщик вызывает
+    `init --root`, а не собирает TOML сам. Иначе один и тот же формат живёт
+    в двух местах — в Python и в Pascal, — и расходится при первой же правке.
+    """
+    base = _as_path(root)
+    storage = toml_string(str(base / "storage"))
+    tmp = toml_string(str(base / "tmp"))
+
+    return f"""\
 [server]
 host = "0.0.0.0"
 port = 8080
@@ -147,13 +183,16 @@ discovery_enabled = false
 discovery_port = 8081
 
 [storage]
-path = "D:\\\\FilePost\\\\storage"
-tmp_path = "D:\\\\FilePost\\\\tmp"
+# storage и tmp обязаны лежать на одном томе: перемещение собранного файла
+# должно быть мгновенным переименованием, а не копированием гигабайтов.
+path = {storage}
+tmp_path = {tmp}
 chunk_size_mb = 16
 min_free_space_gb = 50
 max_file_size_gb = 20
 
 [retention]
+# ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНО: ничего не удаляется само.
 enabled = false
 delete_after_download_days = 7
 delete_never_downloaded_days = 30
@@ -166,8 +205,12 @@ reservation_idle_hours = 2
 events_retention_days = 30
 
 [backup]
-enabled = true
-path = "E:\\\\Backup\\\\FilePost"
+# ВАЖНО: путь должен указывать на ДРУГОЙ физический диск. Копия рядом
+# с оригиналом защищает только от случайного удаления и бесполезна в том,
+# ради чего бэкап делается. Если такого диска нет, поставьте enabled = false,
+# иначе в журнале будет ошибка при каждом прогоне уборки.
+enabled = false
+path = {toml_string(BACKUP_HINT)}
 time = "03:00"
 keep_copies = 14
 

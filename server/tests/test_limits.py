@@ -348,3 +348,66 @@ def test_cli_survives_non_unicode_locale(tmp_path):
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
     assert (tmp_path / "logs" / "enrollment-code.txt").exists()
     assert "Код регистрации" in result.stdout.decode("utf-8", "replace")
+
+
+# --------------------------------------------------------------------------- config.toml
+
+
+def test_generated_config_parses_for_windows_paths():
+    """Дефект 1.0.0: пути записывались с одинарными обратными слэшами.
+
+    В TOML обратный слэш внутри двойных кавычек — экранирование, поэтому
+    "C:\\FilePost\\storage" не путь, а синтаксическая ошибка. Служба падала
+    при старте с TOMLDecodeError, и понять причину без трассировки было нельзя.
+    """
+    import tomllib
+
+    from filepost.config import default_config_toml
+
+    for root in ("C:\\FilePost", "D:\\FilePost", "C:\\Program Files\\FilePost"):
+        text = default_config_toml(root)
+        data = tomllib.loads(text)   # именно здесь падало
+        assert data["storage"]["path"] == root + "\\storage"
+        assert data["storage"]["tmp_path"] == root + "\\tmp"
+
+
+def test_generated_config_parses_for_posix_paths():
+    import tomllib
+
+    from filepost.config import default_config_toml
+
+    data = tomllib.loads(default_config_toml("/srv/filepost"))
+    assert data["storage"]["path"] == "/srv/filepost/storage"
+
+
+def test_toml_string_escapes_backslashes():
+    from filepost.config import toml_string
+
+    assert toml_string("C:\\FilePost") == '"C:\\\\FilePost"'
+    assert toml_string('a"b') == '"a\\"b"'
+
+
+def test_init_root_generates_usable_config(tmp_path):
+    """Сквозная проверка: установщик вызывает именно это."""
+    import tomllib
+
+    from filepost.cli import main
+    from filepost.config import load_config
+
+    config = tmp_path / "config.toml"
+    assert main(["--config", str(config), "init", "--root", "C:\\FilePost"]) == 0
+
+    # Файл читается и tomllib, и нашим загрузчиком.
+    tomllib.loads(config.read_text(encoding="utf-8"))
+    cfg = load_config(config)
+    assert str(cfg.storage_path).endswith("storage")
+
+
+def test_init_without_root_uses_config_directory(tmp_path):
+    from filepost.cli import main
+    from filepost.config import load_config
+
+    config = tmp_path / "config.toml"
+    assert main(["--config", str(config), "init"]) == 0
+    cfg = load_config(config)
+    assert str(tmp_path) in str(cfg.storage_path)
