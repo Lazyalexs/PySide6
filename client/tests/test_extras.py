@@ -109,6 +109,29 @@ def test_sound_is_valid_wav():
         assert handle.getnframes() > 0
 
 
+def test_sound_is_short_enough_for_a_notification():
+    """Сигнал длиннее пары секунд на каждом письме раздражает и его выключают.
+
+    Страховка на случай пересборки WAV из исходника без обрезки: исходник длится
+    3,2 с, из них почти две — тишина.
+    """
+    with wave.open(str(sound.resource_path()), "rb") as handle:
+        seconds = handle.getnframes() / handle.getframerate()
+    assert 0.2 <= seconds <= 2.0, f"длительность {seconds:.2f} с вне разумного для уведомления"
+
+
+def test_sound_fades_out_without_click():
+    """Обрезка без затухания даёт щелчок на конце."""
+    import struct
+
+    with wave.open(str(sound.resource_path()), "rb") as handle:
+        frames = handle.getnframes()
+        samples = struct.unpack(f"<{frames}h", handle.readframes(frames))
+    tail = max(abs(x) for x in samples[-200:])
+    peak = max(abs(x) for x in samples)
+    assert tail < peak * 0.02, f"хвост {tail} при пике {peak} — будет слышен обрыв"
+
+
 def test_sound_disabled_does_nothing():
     assert sound.play_notification(enabled=False) is False
 

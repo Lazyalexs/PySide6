@@ -51,7 +51,7 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 ```bash
 cd server && python -m pytest tests/ -q     # 60
-cd client && python -m pytest tests/ -q     # 50
+cd client && python -m pytest tests/ -q     # 52
 ```
 
 Клиентские тесты поднимают настоящий сервер в потоке и гоняют полный цикл: передачу,
