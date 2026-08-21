@@ -24,6 +24,54 @@ log = logging.getLogger("filepost.transfers")
 
 READ_BLOCK = 1024 * 1024
 RETRY_DELAYS = [1, 2, 5, 10, 30]
+MB = 1024 * 1024
+
+
+class RateLimiter:
+    """Ограничение скорости отдачи. Настройка из 3.7.
+
+    Выглядит лишним в гигабитной сети, но именно оно спасает, когда кто-то
+    отправляет 20 ГБ в разгар рабочего дня и остальные начинают жаловаться
+    на тормоза.
+
+    Считаем по факту переданного: после каждого чанка смотрим, сколько времени
+    он должен был занять при заданном пределе, и досыпаем разницу. Так средняя
+    скорость выходит на предел без дробления чанков.
+    """
+
+    def __init__(self, limit_mbps: int = 0) -> None:
+        self.limit = max(0, limit_mbps) * MB
+        self._started = time.monotonic()
+        self._sent = 0
+
+    @property
+    def enabled(self) -> bool:
+        return self.limit > 0
+
+    def reset(self) -> None:
+        self._started = time.monotonic()
+        self._sent = 0
+
+    def account(self, size: int, should_stop: Callable[[], bool] | None = None) -> float:
+        """Учесть переданные байты и подождать, если обгоняем предел."""
+        if not self.enabled:
+            return 0.0
+        self._sent += size
+        expected = self._sent / self.limit
+        elapsed = time.monotonic() - self._started
+        delay = expected - elapsed
+        if delay <= 0:
+            return 0.0
+        # Спим короткими шагами, чтобы пауза и отмена срабатывали сразу,
+        # а не через минуту ожидания на медленном пределе.
+        remaining = delay
+        while remaining > 0:
+            if should_stop and should_stop():
+                break
+            step = min(0.2, remaining)
+            time.sleep(step)
+            remaining -= step
+        return delay
 
 
 @dataclass
@@ -63,6 +111,7 @@ class TransferManager:
         partial_dir: Path | None = None,
         on_progress: Callable[[Progress], None] | None = None,
         on_name_clash: str = "rename",
+        upload_limit_mbps: int = 0,
     ) -> None:
         self.api = api
         self.store = store
@@ -71,6 +120,8 @@ class TransferManager:
         self.partial_dir = Path(partial_dir or ".")
         self.on_progress = on_progress
         self.on_name_clash = on_name_clash
+        # Предел общий на все потоки: ограничивать нужно канал, а не каждую передачу.
+        self.limiter = RateLimiter(upload_limit_mbps)
 
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -255,6 +306,7 @@ class TransferManager:
                 transferred = min(transferred + len(block), item["size"])
                 self.store.update_transfer(item["id"], transferred=transferred)
                 self._emit(item, "active", transferred, started)
+                self.limiter.account(len(block), lambda: self._is_paused(item["id"]))
 
         # Фаза «Проверка»: сборка и сверка sha256 идут на сервере (2.7).
         self.store.update_transfer(item["id"], state="verifying")

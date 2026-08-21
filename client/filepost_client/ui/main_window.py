@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from ..api import ApiError
 from ..core import Core
+from ..sound import play_notification
 from ..transfers import Progress
 from ..util import human_size, human_time
 from .compose import ComposeDialog
@@ -44,8 +45,12 @@ from .views import (
     TransfersView,
 )
 
-INBOX, SENT, TRANSFERS, STATIONS = "inbox", "sent", "transfers", "stations"
+INBOX, SENT, DRAFTS = "inbox", "sent", "drafts"
+TRANSFERS, STATIONS = "transfers", "stations"
 ADMIN_STATIONS, ADMIN_STORAGE, ADMIN_AUDIT = "a_stations", "a_storage", "a_audit"
+
+#: Папки, где в средней колонке показывается список писем.
+LIST_FOLDERS = (INBOX, SENT, DRAFTS)
 
 
 def _icon(color: str) -> QIcon:
@@ -169,6 +174,7 @@ class MainWindow(QMainWindow):
         entries = [
             (INBOX, "✉  Входящие"),
             (SENT, "➤  Отправленные"),
+            (DRAFTS, "✎  Черновики"),
             (TRANSFERS, "⇅  Передачи"),
             (STATIONS, "🖥  Станции"),
         ]
@@ -219,7 +225,7 @@ class MainWindow(QMainWindow):
             f"✉  Входящие {unread}" if unread else "✉  Входящие"
         )
         self.tray.setToolTip(f"FilePost — {unread} непрочитанных" if unread else "FilePost")
-        if self.current_folder in (INBOX, SENT):
+        if self.current_folder in LIST_FOLDERS:
             self._fill_messages()
         self._update_status()
 
@@ -240,6 +246,11 @@ class MainWindow(QMainWindow):
     def _fill_messages(self) -> None:
         current = self._selected_message_id()
         self.messages.clear()
+
+        if self.current_folder == DRAFTS:
+            self._fill_drafts()
+            return
+
         items = self.core.inbox() if self.current_folder == INBOX else self.core.sent()
         for item in items:
             peer = (
@@ -261,6 +272,18 @@ class MainWindow(QMainWindow):
             if item["id"] == current:
                 self.messages.setCurrentItem(entry)
 
+    def _fill_drafts(self) -> None:
+        names = self._station_names()
+        for draft in self.core.drafts():
+            peer = ", ".join(names(r) for r in draft["recipients"]) or "(без адресата)"
+            marks = f"  📎{len(draft['files'])}" if draft["files"] else ""
+            entry = QListWidgetItem(
+                f"{peer}     {human_time(draft.get('updated_at'))}\n"
+                f"{draft.get('subject') or '(без темы)'}{marks}"
+            )
+            entry.setData(Qt.ItemDataRole.UserRole, draft["id"])
+            self.messages.addItem(entry)
+
     # ------------------------------------------------------------------ события UI
 
     def _folder_changed(self, item: QListWidgetItem | None) -> None:
@@ -273,6 +296,7 @@ class MainWindow(QMainWindow):
         pages = {
             INBOX: 0,
             SENT: 0,
+            DRAFTS: 0,
             TRANSFERS: 1,
             STATIONS: 2,
             ADMIN_STATIONS: 3,
@@ -280,9 +304,9 @@ class MainWindow(QMainWindow):
             ADMIN_AUDIT: 5,
         }
         self.right.setCurrentIndex(pages.get(key, 0))
-        self.messages.setVisible(key in (INBOX, SENT))
+        self.messages.setVisible(key in LIST_FOLDERS)
 
-        if key in (INBOX, SENT):
+        if key in LIST_FOLDERS:
             self._fill_messages()
         elif key == TRANSFERS:
             self.transfers_view.refresh()
@@ -295,6 +319,18 @@ class MainWindow(QMainWindow):
         elif key == ADMIN_AUDIT:
             self.admin_audit.refresh()
 
+    def select_folder(self, key: str) -> bool:
+        """Переключиться на раздел по ключу, а не по номеру строки.
+
+        Номера сдвигаются при добавлении разделов, и у администратора список
+        длиннее — жёсткие индексы здесь ломаются молча.
+        """
+        for i in range(self.folders.count()):
+            if self.folders.item(i).data(Qt.ItemDataRole.UserRole) == key:
+                self.folders.setCurrentRow(i)
+                return True
+        return False
+
     def _selected_message_id(self) -> int | None:
         item = self.messages.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else None
@@ -304,10 +340,20 @@ class MainWindow(QMainWindow):
             self.header.clear()
             self.body.clear()
             self.attachments.clear()
+            # Кнопки тоже сбрасываем: иначе после удаления последнего черновика
+            # на пустой карточке остаётся «Продолжить письмо».
+            self._set_buttons_for_message()
             return
+
+        if self.current_folder == DRAFTS:
+            self._show_draft(item.data(Qt.ItemDataRole.UserRole))
+            return
+
         message = self.core.message(item.data(Qt.ItemDataRole.UserRole))
         if not message:
             return
+
+        self._set_buttons_for_message()
 
         recipients = ", ".join(r["name"] for r in message.get("recipients", []))
         lines = [f"<b>Тема:</b> {message.get('subject') or '(без темы)'}"]
@@ -334,6 +380,58 @@ class MainWindow(QMainWindow):
         if self.current_folder == INBOX and not message["is_read"]:
             self.core.mark_read(message["id"])
 
+    def _set_buttons_for_message(self) -> None:
+        self.save_button.setText("Сохранить всё")
+        self.reply_button.setEnabled(True)
+        self.delete_button.setText("Удалить у себя")
+
+    def _set_buttons_for_draft(self) -> None:
+        """В папке черновиков те же кнопки означают другое."""
+        self.save_button.setText("Продолжить письмо")
+        self.reply_button.setEnabled(False)
+        self.delete_button.setText("Удалить черновик")
+
+    def _station_names(self):
+        """Имена из кэша адресной книги.
+
+        Станция может отсутствовать: черновик пролежал дольше, чем станция была
+        в системе, или кэш ещё не обновлялся. «станция №4» понятнее вопросительного
+        знака — по номеру администратор хотя бы найдёт, о ком речь.
+        """
+        cache = {s["station_id"]: s["display_name"] for s in self.core.stations()}
+        return lambda station_id: cache.get(station_id, f"станция №{station_id}")
+
+    def _show_draft(self, draft_id: int) -> None:
+        draft = self.core.draft(draft_id)
+        if not draft:
+            return
+        names = self._station_names()
+        peer = ", ".join(names(r) for r in draft["recipients"]) or "—"
+        self.header.setText(
+            f"<b>Черновик</b><br><b>Кому:</b> {peer}<br>"
+            f"<b>Тема:</b> {draft.get('subject') or '(без темы)'}"
+        )
+        self.body.setPlainText(draft.get("body") or "")
+        self.attachments.clear()
+        for path in draft["files"]:
+            exists = Path(path).exists()
+            suffix = "" if exists else "   (файл не найден)"
+            self.attachments.addItem(f"📎  {Path(path).name}{suffix}")
+
+        self._set_buttons_for_draft()
+
+    def _edit_draft(self) -> None:
+        draft_id = self._selected_message_id()
+        if draft_id is None:
+            return
+        draft = self.core.draft(draft_id)
+        if not draft:
+            return
+        dialog = ComposeDialog(self.core, self, draft=draft)
+        dialog.exec()
+        self.refresh()
+        self._fill_messages()
+
     def _on_new_message(self, message: dict) -> None:
         if self.core.settings.prefs.notify_new_message:
             self.tray.showMessage(
@@ -342,6 +440,7 @@ class MainWindow(QMainWindow):
                 QSystemTrayIcon.MessageIcon.Information,
                 5000,
             )
+            play_notification(self.core.settings.prefs.sound)
         self.refresh()
 
     def _on_progress(self, progress: Progress) -> None:
@@ -350,17 +449,19 @@ class MainWindow(QMainWindow):
             self.tray.showMessage(
                 "Передача завершена", "", QSystemTrayIcon.MessageIcon.Information, 3000
             )
+            play_notification(self.core.settings.prefs.sound)
         if progress.state == "error" and progress.error:
             self.tray.showMessage(
                 "Ошибка передачи", progress.error, QSystemTrayIcon.MessageIcon.Warning, 8000
             )
+            play_notification(self.core.settings.prefs.sound)
 
     # ------------------------------------------------------------------ действия
 
     def _compose(self, reply_to: dict | None = None) -> None:
         dialog = ComposeDialog(self.core, self, reply_to=reply_to or None)
         if dialog.exec():
-            self.folders.setCurrentRow(2)  # показать «Передачи»: там видно, что идёт
+            self.select_folder(TRANSFERS)  # там видно, что передача пошла
 
     def _reply(self) -> None:
         message_id = self._selected_message_id()
@@ -369,6 +470,10 @@ class MainWindow(QMainWindow):
         self._compose(self.core.message(message_id))
 
     def _download_all(self) -> None:
+        # В папке черновиков та же кнопка продолжает письмо, а не качает вложения.
+        if self.current_folder == DRAFTS:
+            self._edit_draft()
+            return
         message_id = self._selected_message_id()
         if message_id is None:
             return
@@ -376,17 +481,25 @@ class MainWindow(QMainWindow):
         if not ids:
             QMessageBox.information(self, "FilePost", "В сообщении нет готовых вложений.")
             return
-        self.folders.setCurrentRow(2)
+        self.select_folder(TRANSFERS)
 
     def _hide(self) -> None:
-        message_id = self._selected_message_id()
-        if message_id is None:
+        item_id = self._selected_message_id()
+        if item_id is None:
             return
+
+        if self.current_folder == DRAFTS:
+            confirm = QMessageBox.question(self, "FilePost", "Удалить черновик?")
+            if confirm == QMessageBox.StandardButton.Yes:
+                self.core.delete_draft(item_id)
+                self._fill_messages()
+            return
+
         confirm = QMessageBox.question(
             self, "FilePost", "Скрыть это сообщение у себя?"
         )
         if confirm == QMessageBox.StandardButton.Yes:
-            self.core.hide(message_id)
+            self.core.hide(item_id)
             self.refresh()
 
     def _force_refresh(self) -> None:

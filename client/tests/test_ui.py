@@ -17,47 +17,62 @@ from conftest import wait_for
 pytest.importorskip("PySide6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from filepost_client.ui.compose import ComposeDialog  # noqa: E402
-from filepost_client.ui.main_window import INBOX, STATIONS, TRANSFERS, MainWindow  # noqa: E402
-from filepost_client.ui.settings_dialog import SettingsDialog  # noqa: E402
+from filepost_client.ui.main_window import (  # noqa: E402
+    DRAFTS,
+    INBOX,
+    SENT,
 
+    STATIONS,
+    TRANSFERS,
+    MainWindow,
+)
+from filepost_client.ui.settings_dialog import SettingsDialog  # noqa: E402
 
 @pytest.fixture(scope="session")
 def qt_app():
     app = QApplication.instance() or QApplication([])
     yield app
 
-
 def make_file(path: Path, size: int) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(os.urandom(size))
     return path
-
 
 def test_main_window_builds(qt_app, buh, sklad):
     buh.sync()
     window = MainWindow(buh)
     try:
         assert window.windowTitle().startswith("FilePost")
-        # Разделы: 4 обычных + разделитель + 3 админских (станция администратора).
-        assert window.folders.count() == 8
+        keys = [
+            window.folders.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(window.folders.count())
+        ]
+        # Обычные разделы + разделитель (None) + админские: станция администратора.
+        assert [k for k in keys if k] == [
+            INBOX, SENT, DRAFTS, TRANSFERS, STATIONS,
+            "a_stations", "a_storage", "a_audit",
+        ]
         assert "Сервер доступен" in window.status.text()
         assert buh.settings.station.display_name in window.status.text()
     finally:
         window.tray.hide()
-
 
 def test_non_admin_has_no_management_sections(qt_app, sklad):
     window = MainWindow(sklad)
     try:
         titles = [window.folders.item(i).text() for i in range(window.folders.count())]
         assert not any("УПРАВЛЕНИЕ" in t for t in titles)
-        assert window.folders.count() == 4
+        keys = [
+            window.folders.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(window.folders.count())
+        ]
+        assert keys == [INBOX, SENT, DRAFTS, TRANSFERS, STATIONS]
     finally:
         window.tray.hide()
-
 
 def test_offline_banner(qt_app, buh, server):
     server.stop()
@@ -70,7 +85,6 @@ def test_offline_banner(qt_app, buh, server):
     finally:
         window.tray.hide()
 
-
 def test_compose_lists_stations_not_addresses(qt_app, buh, sklad):
     buh.sync()
     dialog = ComposeDialog(buh)
@@ -79,7 +93,6 @@ def test_compose_lists_stations_not_addresses(qt_app, buh, sklad):
     # Ни IP, ни имени ПК в списке быть не должно.
     assert not any("127.0.0.1" in label or "SKLAD" in label.upper() for label in labels)
     assert any("в сети" in label for label in labels)
-
 
 def test_compose_filter(qt_app, buh, sklad, make_client):
     make_client("Кадры")
@@ -92,7 +105,6 @@ def test_compose_filter(qt_app, buh, sklad, make_client):
         if not dialog.recipients.item(i).isHidden()
     ]
     assert len(visible) == 1 and "Склад" in visible[0]
-
 
 def test_inbox_shows_message(qt_app, buh, sklad, tmp_path: Path):
     path = make_file(tmp_path / "src" / "акты.zip", 4096)
@@ -126,7 +138,6 @@ def test_inbox_shows_message(qt_app, buh, sklad, tmp_path: Path):
     finally:
         window.tray.hide()
 
-
 def test_transfers_view_shows_progress(qt_app, buh, sklad, tmp_path: Path):
     path = make_file(tmp_path / "src" / "big.bin", 2 * 1024 * 1024)
     buh.transfers.start()
@@ -134,7 +145,7 @@ def test_transfers_view_shows_progress(qt_app, buh, sklad, tmp_path: Path):
 
     window = MainWindow(buh)
     try:
-        window.folders.setCurrentRow(2)
+        assert window.select_folder(TRANSFERS)
         assert window.current_folder == TRANSFERS
         window.transfers_view.refresh()
         assert window.transfers_view.table.rowCount() == 1
@@ -143,12 +154,11 @@ def test_transfers_view_shows_progress(qt_app, buh, sklad, tmp_path: Path):
     finally:
         window.tray.hide()
 
-
 def test_stations_view(qt_app, buh, sklad):
     buh._refresh_presence()
     window = MainWindow(buh)
     try:
-        window.folders.setCurrentRow(3)
+        assert window.select_folder(STATIONS)
         assert window.current_folder == STATIONS
         window.stations_view.refresh()
         assert window.stations_view.table.rowCount() == 1
@@ -156,7 +166,6 @@ def test_stations_view(qt_app, buh, sklad):
         assert window.stations_view.table.item(0, 1).text() == "в сети"
     finally:
         window.tray.hide()
-
 
 def test_admin_views_load(qt_app, buh, sklad):
     window = MainWindow(buh)
@@ -172,7 +181,6 @@ def test_admin_views_load(qt_app, buh, sklad):
     finally:
         window.tray.hide()
 
-
 def test_admin_enrollment_shows_code(qt_app, buh):
     window = MainWindow(buh)
     try:
@@ -180,7 +188,6 @@ def test_admin_enrollment_shows_code(qt_app, buh):
         assert "Код регистрации:" in window.admin_stations.hint.text()
     finally:
         window.tray.hide()
-
 
 def test_settings_dialog_locks_deployment_params(qt_app, buh):
     """Параметры развёртывания показываются, но не редактируются (3.7)."""
@@ -194,7 +201,6 @@ def test_settings_dialog_locks_deployment_params(qt_app, buh):
     # Имя станции редактируемое, адрес сервера — нет (это QLabel, не QLineEdit).
     assert dialog.display_name.isEnabled()
     assert not hasattr(dialog, "server_url_edit")
-
 
 def test_settings_saves_preferences(qt_app, buh):
     dialog = SettingsDialog(buh)

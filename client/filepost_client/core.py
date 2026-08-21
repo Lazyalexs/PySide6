@@ -36,6 +36,7 @@ class Core:
             partial_dir=settings.partial_dir,
             on_progress=self._on_progress,
             on_name_clash=settings.prefs.on_name_clash,
+            upload_limit_mbps=settings.prefs.upload_limit_mbps,
         )
 
         self.online = False
@@ -284,15 +285,52 @@ class Core:
     # ------------------------------------------------------------------ отправка
 
     def compose(self, recipients: list[int], subject: str, body: str,
-                files: list[Path]) -> int:
-        """Создаёт сообщение и ставит файлы в очередь. Отправка произойдёт сама."""
+                files: list[Path], draft_id: int | None = None) -> int:
+        """Создаёт сообщение и ставит файлы в очередь. Отправка произойдёт сама.
+
+        Сообщение на сервере появляется только здесь: незаконченное письмо живёт
+        в локальных черновиках и серверу неизвестно.
+        """
         message_id = self.api.create_message(subject, body, recipients)
         names = {s["station_id"]: s["display_name"] for s in self.stations()}
         peer = ", ".join(names.get(r, str(r)) for r in recipients)
         for path in files:
             self.transfers.enqueue_upload(Path(path), message_id, peer)
         self.transfers.kick()
+        if draft_id:
+            self.store.remove_draft(draft_id)
         return message_id
+
+    # ------------------------------------------------------------------ черновики
+
+    def save_draft(
+        self,
+        recipients: list[int],
+        subject: str,
+        body: str,
+        files: list[Path],
+        draft_id: int | None = None,
+    ) -> int:
+        """Сохранить незаконченное письмо. Работает и без связи с сервером."""
+        draft_id = self.store.save_draft(
+            draft_id=draft_id,
+            subject=subject,
+            body=body,
+            recipients=recipients,
+            files=[str(p) for p in files],
+        )
+        self._notify()
+        return draft_id
+
+    def drafts(self) -> list[dict]:
+        return self.store.drafts()
+
+    def draft(self, draft_id: int) -> dict | None:
+        return self.store.draft(draft_id)
+
+    def delete_draft(self, draft_id: int) -> None:
+        self.store.remove_draft(draft_id)
+        self._notify()
 
     def finalize_if_ready(self, message_id: int) -> bool:
         """Все вложения загружены — переводим сообщение в «отправлено»."""
@@ -328,6 +366,20 @@ class Core:
         self.settings.station.display_name = display_name
         self.settings.save()
         self._notify()
+
+    def apply_settings(self) -> None:
+        """Подхватить изменённые предпочтения без перезапуска клиента.
+
+        Число потоков на лету не меняем: пересоздавать пул посреди активных
+        передач дороже, чем дождаться следующего запуска.
+        """
+        prefs = self.settings.prefs
+        self.transfers.downloads_dir = self.settings.downloads_dir
+        self.transfers.partial_dir = self.settings.partial_dir
+        self.transfers.on_name_clash = prefs.on_name_clash
+        self.transfers.limiter.limit = max(0, prefs.upload_limit_mbps) * (1024 * 1024)
+        self.transfers.limiter.reset()
+        self.settings.ensure_dirs()
 
     def refresh_health(self) -> dict:
         try:

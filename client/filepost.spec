@@ -8,7 +8,8 @@ a = Analysis(
     ["filepost_client/main.py"],
     pathex=["."],
     binaries=[],
-    datas=[],
+    # Звук уведомлений распаковывается в sys._MEIPASS/resources — см. sound.resource_path.
+    datas=[("filepost_client/resources/notify.wav", "resources")],
     hiddenimports=["filepost_client.ui.main_window", "filepost_client.ui.setup"],
     hookspath=[],
     runtime_hooks=[],

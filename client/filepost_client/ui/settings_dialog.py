@@ -231,6 +231,6 @@ class SettingsDialog(QDialog):
                 QMessageBox.warning(self, "FilePost", exc.message)
                 return
 
-        self.settings.ensure_dirs()
         self.settings.save()
+        self.core.apply_settings()
         self.accept()

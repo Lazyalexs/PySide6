@@ -12,6 +12,8 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable
 
+from .util import utcnow
+
 SCHEMA = """
 PRAGMA journal_mode = WAL;
 
@@ -40,6 +42,16 @@ CREATE TABLE IF NOT EXISTS stations (
     online         INTEGER DEFAULT 0,
     last_seen_at   TEXT,
     client_version TEXT
+);
+
+CREATE TABLE IF NOT EXISTS drafts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    subject     TEXT NOT NULL DEFAULT '',
+    body        TEXT NOT NULL DEFAULT '',
+    recipients  TEXT NOT NULL DEFAULT '[]',   -- JSON: id станций
+    files       TEXT NOT NULL DEFAULT '[]',   -- JSON: пути к файлам
+    created_at  TEXT,
+    updated_at  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS transfers (
@@ -215,6 +227,57 @@ class LocalStore:
             (exclude_self,),
         )
         return [dict(r) | {"online": bool(r["online"])} for r in rows]
+
+    # ------------------------------------------------------------------ черновики
+
+    def save_draft(
+        self,
+        *,
+        draft_id: int | None = None,
+        subject: str = "",
+        body: str = "",
+        recipients: list[int] | None = None,
+        files: list[str] | None = None,
+    ) -> int:
+        """Черновик живёт только локально: на сервере до отправки ничего не создаётся."""
+        payload = (
+            subject,
+            body,
+            json.dumps(recipients or [], ensure_ascii=False),
+            json.dumps(files or [], ensure_ascii=False),
+            utcnow(),
+        )
+        if draft_id:
+            self.execute(
+                "UPDATE drafts SET subject=?, body=?, recipients=?, files=?, updated_at=?"
+                " WHERE id = ?",
+                (*payload, draft_id),
+            )
+            return draft_id
+        cur = self.execute(
+            "INSERT INTO drafts (subject, body, recipients, files, updated_at, created_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (*payload, utcnow()),
+        )
+        return int(cur.lastrowid or 0)
+
+    def drafts(self) -> list[dict]:
+        rows = self.query("SELECT * FROM drafts ORDER BY updated_at DESC")
+        return [self._row_to_draft(r) for r in rows]
+
+    def draft(self, draft_id: int) -> dict | None:
+        row = self.one("SELECT * FROM drafts WHERE id = ?", (draft_id,))
+        return self._row_to_draft(row) if row else None
+
+    def remove_draft(self, draft_id: int) -> None:
+        self.execute("DELETE FROM drafts WHERE id = ?", (draft_id,))
+
+    @staticmethod
+    def _row_to_draft(row: sqlite3.Row) -> dict:
+        item = dict(row)
+        item["recipients"] = json.loads(item.get("recipients") or "[]")
+        item["files"] = json.loads(item.get("files") or "[]")
+        return item
 
     # ------------------------------------------------------------------ передачи
 

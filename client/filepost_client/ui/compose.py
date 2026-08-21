@@ -28,10 +28,17 @@ from ..util import human_presence, human_size
 
 
 class ComposeDialog(QDialog):
-    def __init__(self, core: Core, parent=None, reply_to: dict | None = None) -> None:
+    def __init__(
+        self,
+        core: Core,
+        parent=None,
+        reply_to: dict | None = None,
+        draft: dict | None = None,
+    ) -> None:
         super().__init__(parent)
         self.core = core
         self.files: list[Path] = []
+        self.draft_id: int | None = draft["id"] if draft else None
         self.setWindowTitle("Новое сообщение")
         self.resize(680, 620)
         self.setAcceptDrops(True)
@@ -80,17 +87,39 @@ class ComposeDialog(QDialog):
         layout.addWidget(self.summary)
 
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Отправить")
+        buttons.button(QDialogButtonBox.StandardButton.Save).setText("В черновики")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
         buttons.accepted.connect(self._send)
+        buttons.button(QDialogButtonBox.StandardButton.Save).clicked.connect(self._save_draft)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
         if reply_to:
             self.subject.setText(f"Re: {reply_to.get('subject', '')}")
             self._preselect(reply_to.get("sender"))
+        if draft:
+            self._load_draft(draft)
+
+    def _load_draft(self, draft: dict) -> None:
+        self.subject.setText(draft.get("subject", ""))
+        self.body.setPlainText(draft.get("body", ""))
+        wanted = set(draft.get("recipients", []))
+        for i in range(self.recipients.count()):
+            item = self.recipients.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) in wanted:
+                item.setSelected(True)
+        # Файл мог быть удалён или перемещён с момента сохранения черновика.
+        missing = [p for p in draft.get("files", []) if not Path(p).exists()]
+        self._add_files([Path(p) for p in draft.get("files", []) if Path(p).exists()])
+        if missing:
+            self.summary.setText(
+                f"Не найдено файлов: {len(missing)} — добавьте заново"
+            )
 
     # ------------------------------------------------------------------ получатели
 
@@ -161,6 +190,17 @@ class ComposeDialog(QDialog):
 
     # ------------------------------------------------------------------ отправка
 
+    def _save_draft(self) -> None:
+        """Черновик сохраняется локально и работает без связи с сервером."""
+        self.draft_id = self.core.save_draft(
+            self.selected_recipients(),
+            self.subject.text().strip(),
+            self.body.toPlainText().strip(),
+            self.files,
+            draft_id=self.draft_id,
+        )
+        self.accept()
+
     def _send(self) -> None:
         recipients = self.selected_recipients()
         if not recipients:
@@ -175,8 +215,16 @@ class ComposeDialog(QDialog):
                 self.subject.text().strip(),
                 self.body.toPlainText().strip(),
                 self.files,
+                draft_id=self.draft_id,
             )
         except ApiError as exc:
-            QMessageBox.warning(self, "FilePost", exc.message)
+            # Без связи письмо не потеряется: предлагаем убрать его в черновики.
+            answer = QMessageBox.question(
+                self,
+                "FilePost",
+                f"{exc.message}\n\nСохранить письмо в черновиках?",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._save_draft()
             return
         self.accept()
