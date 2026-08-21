@@ -71,8 +71,13 @@ Filename: "netsh"; \
 
 ; Исключение Defender: realtime-сканирование режет скорость записи в разы
 ; и может перехватить файл ровно в момент сборки из чанков.
+;
+; Открывающая скобка блока PowerShell удваивается, закрывающая — нет: в Inno
+; экранируется только «{» (см. AppId выше). Написанное симметрично «}}» уехало
+; бы в PowerShell лишней скобкой, и команда молча не выполнилась бы — шаг идёт
+; со runhidden и код возврата не проверяется.
 Filename: "powershell"; \
-    Parameters: "-NoProfile -Command ""if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {{ Add-MpPreference -ExclusionPath '{app}' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess '{app}\{#AppExe}' -ErrorAction SilentlyContinue }}"""; \
+    Parameters: "-NoProfile -Command ""if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {{ Add-MpPreference -ExclusionPath '{app}' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess '{app}\{#AppExe}' -ErrorAction SilentlyContinue }"""; \
     StatusMsg: "Исключение антивируса..."; Flags: runhidden; Tasks: defender
 
 ; Регистрация службы.
@@ -118,8 +123,12 @@ var
 
 function GetPort(Param: String): String;
 begin
-  { GetPort вызывается и из [Run] через {code:GetPort}, и из кода мастера.
-    В тихой установке страницы порта нет, поэтому проверяем на nil. }
+  // Комментарий здесь строчный не по вкусу: { } не вкладываются, и фигурная
+  // скобка в тексте закрыла бы комментарий на середине — на этом сборка
+  // установщика падала с 1.0.2 («Identifier expected»).
+  //
+  // GetPort вызывается и из [Run] через {code:GetPort}, и из кода мастера.
+  // В тихой установке страницы порта нет, поэтому проверяем на nil.
   Result := '';
   if PortPage <> nil then
     Result := Trim(PortPage.Values[0]);
