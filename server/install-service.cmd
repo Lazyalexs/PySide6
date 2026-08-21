@@ -5,7 +5,7 @@ rem Запускать от имени администратора.
 setlocal
 set ROOT=%~dp0
 set NSSM=%ROOT%nssm.exe
-set PYTHON=%ROOT%.venv\Scripts\python.exe
+set EXE=%ROOT%filepost-server.exe
 set SERVICE=FilePost
 
 rem Каталог хранилища из config.toml. Если он лежит не на D:, поправьте здесь —
@@ -16,13 +16,14 @@ if not exist "%NSSM%" (
     echo Не найден nssm.exe рядом со скриптом. Скачайте NSSM и положите его сюда.
     exit /b 1
 )
-if not exist "%PYTHON%" (
-    echo Не найден %PYTHON%. Сначала создайте venv и поставьте зависимости.
+if not exist "%EXE%" (
+    echo Не найден %EXE%. Соберите его: build.cmd на машине сборки,
+    echo затем скопируйте filepost-server.exe сюда. Python на сервере не нужен.
     exit /b 1
 )
 
 echo === Установка службы %SERVICE% ===
-"%NSSM%" install %SERVICE% "%PYTHON%" "-m" "filepost.cli" "--config" "%ROOT%config.toml" "serve"
+"%NSSM%" install %SERVICE% "%EXE%" "--config" "%ROOT%config.toml" "serve"
 "%NSSM%" set %SERVICE% AppDirectory "%ROOT%"
 "%NSSM%" set %SERVICE% DisplayName "FilePost — обмен файлами"
 "%NSSM%" set %SERVICE% Description "Служба обмена файлами в закрытой сети"
@@ -54,7 +55,7 @@ rem тогда просто ничего не сделают, и исключе�
 powershell -NoProfile -Command ^
     "if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) {" ^
     "  Add-MpPreference -ExclusionPath '%STORAGE%' -ErrorAction SilentlyContinue;" ^
-    "  Add-MpPreference -ExclusionProcess '%PYTHON%' -ErrorAction SilentlyContinue;" ^
+    "  Add-MpPreference -ExclusionProcess '%EXE%' -ErrorAction SilentlyContinue;" ^
     "  Write-Host 'Исключения Defender добавлены';" ^
     "  Get-MpPreference ^| Select-Object -ExpandProperty ExclusionPath" ^
     "} else { Write-Host 'Microsoft Defender не найден — заведите исключение вручную' }"

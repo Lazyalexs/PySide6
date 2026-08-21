@@ -5,7 +5,9 @@
 block_cipher = None
 
 a = Analysis(
-    ["filepost_client/main.py"],
+    # Не filepost_client/main.py: PyInstaller запускает скрипт как __main__ без
+    # пакетного контекста, и относительные импорты внутри него падают.
+    ["run_client.py"],
     pathex=["."],
     binaries=[],
     # Звук уведомлений распаковывается в sys._MEIPASS/resources — см. sound.resource_path.

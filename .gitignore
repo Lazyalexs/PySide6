@@ -26,3 +26,6 @@ dist/
 .pytest_cache/
 .coverage
 nssm.exe
+
+# артефакты сборки установщиков
+Output/
