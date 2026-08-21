@@ -24,9 +24,9 @@ jobs:
       contents: write     # нужно шагу «Создать релиз»
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -139,7 +139,7 @@ jobs:
       # ---------------------------------------------------------------- выкладка
 
       - name: Выложить установщики
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: FilePost-installers
           retention-days: 90
@@ -150,7 +150,7 @@ jobs:
       # Отдельно кладём голые exe: пригодятся при ручном обновлении, когда
       # переустанавливать целиком не хочется.
       - name: Выложить отдельные exe
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: FilePost-binaries
           retention-days: 30
@@ -160,7 +160,7 @@ jobs:
 
       - name: Создать релиз
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             server/Output/*.exe
